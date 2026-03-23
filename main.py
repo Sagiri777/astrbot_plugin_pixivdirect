@@ -633,8 +633,13 @@ class PixivDirectPlugin(Star):
     async def _add_emoji_reaction(self, event: AstrMessageEvent, stage: str) -> None:
         """为当前消息添加阶段相关的表情回应"""
         try:
+            # 调试日志
+            logger.info(f"[pixivdirect] _add_emoji_reaction called for stage: {stage}")
+            logger.info(f"[pixivdirect] Platform name: {event.get_platform_name()}")
+
             # 只在aiocqhttp平台支持表情回应
             if event.get_platform_name() != "aiocqhttp":
+                logger.info("[pixivdirect] Platform is not aiocqhttp, skipping")
                 return
 
             from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
@@ -642,11 +647,15 @@ class PixivDirectPlugin(Star):
             )
 
             if not isinstance(event, AiocqhttpMessageEvent):
+                logger.info(
+                    f"[pixivdirect] Event is not AiocqhttpMessageEvent, type: {type(event)}"
+                )
                 return
 
             # 获取当前阶段的表情列表
             emoji_names = self.STAGE_EMOJIS.get(stage, [])
             if not emoji_names:
+                logger.info(f"[pixivdirect] No emoji names for stage: {stage}")
                 return
 
             # 获取表情ID列表
@@ -657,20 +666,27 @@ class PixivDirectPlugin(Star):
                     emoji_ids.append(str(emoji_id))
 
             if not emoji_ids:
+                logger.info(f"[pixivdirect] No emoji IDs found for stage: {stage}")
                 return
 
             # 获取消息ID和客户端
             client = event.bot
             message_id = event.message_obj.message_id
 
+            # 调试日志
+            logger.info(f"[pixivdirect] Bot type: {type(client)}")
+            logger.info(f"[pixivdirect] Message ID: {message_id}")
+            logger.info(f"[pixivdirect] Adding emoji reactions: {emoji_ids}")
+
             # 顺序发送表情回应
             for emoji_id in emoji_ids:
                 try:
-                    await client.api.call_action(
+                    result = await client.api.call_action(
                         "set_msg_emoji_like",
                         message_id=message_id,
                         emoji_id=emoji_id,
                     )
+                    logger.info(f"[pixivdirect] Emoji reaction result: {result}")
                     await asyncio.sleep(0.3)  # 添加延迟避免请求过快
                 except Exception as e:
                     logger.warning(
@@ -1420,12 +1436,6 @@ class PixivDirectPlugin(Star):
             return
 
         yield event.plain_result(caption)
-
-    @filter.event_message_type(filter.EventMessageType.ALL, priority=99)
-    async def on_any_message(self, event: AstrMessageEvent):
-        if event.get_sender_id() == event.get_self_id():
-            return
-        yield event.plain_result("吃瓜")
 
     @filter.command_group("pixiv")
     def pixiv_group(self):

@@ -6,6 +6,7 @@ import os
 import random
 import re
 import socket
+import ssl
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -15,11 +16,14 @@ from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
+import urllib3
 from requests.adapters import HTTPAdapter
 from requests.exceptions import ConnectionError as RequestsConnectionError
 from requests.exceptions import SSLError as RequestsSSLError
 from requests.exceptions import Timeout as RequestsTimeout
 from requests.utils import get_environ_proxies
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # PixEz host map: fixed IPv4 for CN SNI bypass.
 PIXEZ_HOST_MAP: dict[str, str] = {
@@ -73,7 +77,22 @@ API_ACTIONS: dict[str, str] = {
 
 
 class _HostHeaderSSLAdapter(HTTPAdapter):
-    """Use Host header as TLS assert_hostname when connecting to IP directly."""
+    """Use Host header as TLS assert_hostname when connecting to IP directly.
+
+    This adapter disables check_hostname in the SSL context to allow
+    connecting to IP addresses while still validating the certificate
+    against the Host header domain (similar to pixez/Accesser approach).
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any):
+        self._ssl_context = ssl.create_default_context()
+        self._ssl_context.check_hostname = False
+        self._ssl_context.verify_mode = ssl.CERT_REQUIRED
+        super().__init__(*args, **kwargs)
+
+    def init_poolmanager(self, *args: Any, **kwargs: Any):
+        kwargs["ssl_context"] = self._ssl_context
+        return super().init_poolmanager(*args, **kwargs)
 
     def send(self, request: requests.PreparedRequest, **kwargs: Any):
         host_header = None
@@ -487,15 +506,21 @@ def _get_session() -> requests.Session:
         with _session_lock:
             if _global_session is None:
                 session = requests.Session()
-                session.mount("https://", _HostHeaderSSLAdapter())
-                # Configure connection pool settings
-                adapter = HTTPAdapter(
+                # Use _HostHeaderSSLAdapter for HTTPS with custom SSL context
+                # that disables check_hostname (similar to pixez/Accesser)
+                https_adapter = _HostHeaderSSLAdapter(
                     pool_connections=10,
                     pool_maxsize=20,
                     max_retries=3,
                 )
-                session.mount("https://", adapter)
-                session.mount("http://", adapter)
+                session.mount("https://", https_adapter)
+                # Standard HTTP adapter
+                http_adapter = HTTPAdapter(
+                    pool_connections=10,
+                    pool_maxsize=20,
+                    max_retries=3,
+                )
+                session.mount("http://", http_adapter)
                 _global_session = session
     return _global_session
 
