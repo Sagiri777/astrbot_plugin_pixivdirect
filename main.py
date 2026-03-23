@@ -11,6 +11,7 @@ from urllib.parse import urlsplit
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
+from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.utils.astrbot_path import (
     get_astrbot_plugin_data_path,
     get_astrbot_temp_path,
@@ -508,29 +509,40 @@ class PixivDirectPlugin(Star):
 
         yield event.plain_result(caption)
 
-    @filter.command("pixiv")
-    async def pixiv_command(self, event: AstrMessageEvent):
-        """Pixiv command entrypoint."""
-        args = self._split_command(event.message_str)
-        if not args:
-            yield event.plain_result(self._help_text())
+    @filter.event_message_type(filter.EventMessageType.ALL, priority=99)
+    async def on_any_message(self, event: AstrMessageEvent):
+        if event.get_sender_id() == event.get_self_id():
             return
+        yield event.plain_result("吃瓜")
 
-        subcommand = args[0].lower().strip()
-        if subcommand == "login":
-            async for result in self._handle_login(event, args):
-                yield result
-            return
-        if subcommand == "id":
-            async for result in self._handle_id(event, args):
-                yield result
-            return
-        if subcommand == "random":
-            async for result in self._handle_random(event, args):
-                yield result
-            return
+    @filter.command_group("pixiv")
+    def pixiv_group(self):
+        """Pixiv command group."""
 
+    @pixiv_group.command("help")
+    async def pixiv_help(self, event: AstrMessageEvent):
+        """Show Pixiv command usages."""
         yield event.plain_result(self._help_text())
+
+    @pixiv_group.command("login")
+    async def pixiv_login(self, event: AstrMessageEvent, refresh_token: str = ""):
+        """Bind user's Pixiv refresh token."""
+        async for result in self._handle_login(event, ["login", refresh_token]):
+            yield result
+
+    @pixiv_group.command("id")
+    async def pixiv_id(self, event: AstrMessageEvent, target_type: str = "", target_id: str = ""):
+        """Query Pixiv by illust id or artist id."""
+        async for result in self._handle_id(event, ["id", target_type, target_id]):
+            yield result
+
+    @pixiv_group.command("random")
+    async def pixiv_random(self, event: AstrMessageEvent, filter_text: GreedyStr = ""):
+        """Get a random bookmarked image with optional filters."""
+        filter_tokens = [token for token in re.split(r"\s+", str(filter_text).strip()) if token]
+        args = ["random", *filter_tokens]
+        async for result in self._handle_random(event, args):
+            yield result
 
     async def terminate(self):
         self._random_cache.clear()
