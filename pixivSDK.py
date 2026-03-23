@@ -6,6 +6,7 @@ import os
 import random
 import re
 import socket
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
@@ -46,9 +47,16 @@ PIXIV_UA = "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"
 IMAGE_UA = "PixivIOSApp/5.8.0"
 IMAGE_REFERER = "https://app-api.pixiv.net/"
 
-# Process-level caches: refresh once per script run.
-_RUN_REFRESHED_HOST_MAP: dict[str, dict[str, str]] = {}
+# Process-level caches for runtime DNS resolve.
 _RUN_RESOLVED_IPS: dict[str, list[str]] = {}
+_RUN_CACHE_LOCK = threading.Lock()
+
+# Thread-local storage for DNS patching (thread-safe)
+_thread_local = threading.local()
+
+# Global session pool for connection reuse
+_global_session: requests.Session | None = None
+_session_lock = threading.Lock()
 
 # 常用 action -> API path 映射。也支持直接传入 path（以 / 开头）。
 API_ACTIONS: dict[str, str] = {
@@ -60,6 +68,7 @@ API_ACTIONS: dict[str, str] = {
     "user_illusts": "/v1/user/illusts",
     "user_bookmarks_illust": "/v1/user/bookmarks/illust",
     "search_user": "/v1/search/user",
+    "ugoira_metadata": "/v1/ugoira/metadata",
 }
 
 
@@ -83,7 +92,12 @@ class _HostHeaderSSLAdapter(HTTPAdapter):
 
 
 def _is_ipv4(value: str) -> bool:
-    return bool(re.fullmatch(r"(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}", value))
+    return bool(
+        re.fullmatch(
+            r"(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(\.(25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)){3}",
+            value,
+        )
+    )
 
 
 def _resolve_a_record_via_doh(
@@ -176,6 +190,40 @@ def _doh_server_candidates(primary: str) -> list[str]:
     return candidates
 
 
+def _get_runtime_dns_cache(key: str) -> list[str] | None:
+    with _RUN_CACHE_LOCK:
+        cached = _RUN_RESOLVED_IPS.get(key)
+        return list(cached) if cached is not None else None
+
+
+def _set_runtime_dns_cache(key: str, ips: list[str]) -> None:
+    with _RUN_CACHE_LOCK:
+        _RUN_RESOLVED_IPS[key] = list(ips)
+
+
+def _drop_runtime_dns_cache_for_hosts(
+    hosts: list[str],
+    *,
+    doh_server: str,
+    dns_timeout: int,
+    proxy: str | None,
+) -> None:
+    suffix = f"|{doh_server}|{dns_timeout}|{proxy or ''}"
+    normalized_hosts = {host.lower().rstrip(".") for host in hosts}
+    alias_hosts = {
+        HOST_ALIAS_MAP.get(host)
+        for host in normalized_hosts
+        if HOST_ALIAS_MAP.get(host)
+    }
+    all_hosts = normalized_hosts | {
+        str(host).lower().rstrip(".") for host in alias_hosts
+    }
+
+    with _RUN_CACHE_LOCK:
+        for host in all_hosts:
+            _RUN_RESOLVED_IPS.pop(f"{host}{suffix}", None)
+
+
 def _probe_tcp_latency(ip: str, port: int = 443, timeout: float = 2.0) -> float | None:
     start = time.perf_counter()
     try:
@@ -235,7 +283,9 @@ def _refresh_pixez_hosts_via_dns(
             proxies=proxies,
             include_system_dns=False,
         )
-        ranked, _ = _rank_ips_by_latency(all_ips, timeout=max(1.0, min(3.0, float(timeout))))
+        ranked, _ = _rank_ips_by_latency(
+            all_ips, timeout=max(1.0, min(3.0, float(timeout)))
+        )
         if ranked:
             updated[host] = ranked[0]
     return updated
@@ -292,7 +342,7 @@ def _resolve_host_ips(
 
 def _load_host_map_file(path: str) -> dict[str, str]:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             raw = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
@@ -328,7 +378,7 @@ def _save_host_map_file(path: str, host_map: dict[str, str]) -> None:
 
 def _read_refresh_token_file(path: str = ".pixiv_refresh_token") -> str | None:
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             token = f.read().strip()
             return token or None
     except FileNotFoundError:
@@ -402,12 +452,20 @@ def _patched_dns_resolution(host_map: dict[str, str]):
     normalized = {k.lower().rstrip("."): v for k, v in host_map.items()}
     original_getaddrinfo = socket.getaddrinfo
 
+    # Store original function in thread-local storage for thread safety
+    _thread_local._original_getaddrinfo = original_getaddrinfo
+    _thread_local._dns_normalized = normalized
+
     def patched_getaddrinfo(host: str, *args: Any, **kwargs: Any):
         if isinstance(host, str):
             key = host.lower().rstrip(".")
-            ip = normalized.get(key)
+            normalized_map = getattr(_thread_local, "_dns_normalized", {})
+            ip = normalized_map.get(key)
             if ip:
-                return original_getaddrinfo(ip, *args, **kwargs)
+                original_func = getattr(
+                    _thread_local, "_original_getaddrinfo", original_getaddrinfo
+                )
+                return original_func(ip, *args, **kwargs)
         return original_getaddrinfo(host, *args, **kwargs)
 
     socket.getaddrinfo = patched_getaddrinfo
@@ -415,6 +473,31 @@ def _patched_dns_resolution(host_map: dict[str, str]):
         yield
     finally:
         socket.getaddrinfo = original_getaddrinfo
+        # Clean up thread-local storage
+        if hasattr(_thread_local, "_original_getaddrinfo"):
+            delattr(_thread_local, "_original_getaddrinfo")
+        if hasattr(_thread_local, "_dns_normalized"):
+            delattr(_thread_local, "_dns_normalized")
+
+
+def _get_session() -> requests.Session:
+    """Get or create a global session for connection reuse."""
+    global _global_session
+    if _global_session is None:
+        with _session_lock:
+            if _global_session is None:
+                session = requests.Session()
+                session.mount("https://", _HostHeaderSSLAdapter())
+                # Configure connection pool settings
+                adapter = HTTPAdapter(
+                    pool_connections=10,
+                    pool_maxsize=20,
+                    max_retries=3,
+                )
+                session.mount("https://", adapter)
+                session.mount("http://", adapter)
+                _global_session = session
+    return _global_session
 
 
 def pixiv(
@@ -447,25 +530,24 @@ def pixiv(
     proxies = {"http": proxy, "https": proxy} if proxy else None
     current_user_id: int | None = None
 
-    session = requests.Session()
-    session.mount("https://", _HostHeaderSSLAdapter())
+    session = _get_session()
     host_map = dict(PIXEZ_HOST_MAP)
     host_map.update(_load_host_map_file(dns_cache_file))
     if dns_update_hosts:
-        refresh_key = f"{dns_cache_file}|{dns_server}|{dns_timeout}|{proxy or ''}"
-        cached_refreshed = _RUN_REFRESHED_HOST_MAP.get(refresh_key)
-        if cached_refreshed is None:
-            host_map = _refresh_pixez_hosts_via_dns(
-                base_map=host_map,
-                doh_server=dns_server,
-                timeout=dns_timeout,
-                session=session,
-                proxies=proxies,
-            )
-            _save_host_map_file(dns_cache_file, host_map)
-            _RUN_REFRESHED_HOST_MAP[refresh_key] = dict(host_map)
-        else:
-            host_map.update(cached_refreshed)
+        host_map = _refresh_pixez_hosts_via_dns(
+            base_map=host_map,
+            doh_server=dns_server,
+            timeout=dns_timeout,
+            session=session,
+            proxies=proxies,
+        )
+        _save_host_map_file(dns_cache_file, host_map)
+        _drop_runtime_dns_cache_for_hosts(
+            list(host_map.keys()),
+            doh_server=dns_server,
+            dns_timeout=dns_timeout,
+            proxy=proxy,
+        )
 
     def send(
         method: str,
@@ -499,10 +581,18 @@ def pixiv(
             if req_split.port:
                 netloc = f"{ip}:{req_split.port}"
             return urlunsplit(
-                (req_split.scheme, netloc, req_split.path, req_split.query, req_split.fragment)
+                (
+                    req_split.scheme,
+                    netloc,
+                    req_split.path,
+                    req_split.query,
+                    req_split.fragment,
+                )
             )
 
-        def _do_request(dns_override: dict[str, str] | None = None) -> requests.Response:
+        def _do_request(
+            dns_override: dict[str, str] | None = None,
+        ) -> requests.Response:
             last_res: requests.Response | None = None
             for attempt in range(max_retries + 1):
                 with _patched_dns_resolution(dns_override or {}):
@@ -525,14 +615,18 @@ def pixiv(
                 if retry_after and retry_after.isdigit():
                     wait_seconds = max(wait_seconds, float(retry_after))
                 time.sleep(min(wait_seconds, 15.0))
-            return last_res if last_res is not None else session.request(
-                method=method,
-                url=url,
-                params=req_params,
-                data=data,
-                headers=merged_headers,
-                proxies=proxies,
-                timeout=(8, timeout),
+            return (
+                last_res
+                if last_res is not None
+                else session.request(
+                    method=method,
+                    url=url,
+                    params=req_params,
+                    data=data,
+                    headers=merged_headers,
+                    proxies=proxies,
+                    timeout=(8, timeout),
+                )
             )
 
         if not (bypass_sni and req_host in host_map):
@@ -555,7 +649,7 @@ def pixiv(
 
         if runtime_dns_resolve:
             live_cache_key = f"{req_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
-            live_ips = _RUN_RESOLVED_IPS.get(live_cache_key)
+            live_ips = _get_runtime_dns_cache(live_cache_key)
             if live_ips is None:
                 live_ips = _resolve_host_ips(
                     req_host,
@@ -565,7 +659,7 @@ def pixiv(
                     proxies=proxies,
                     max_doh_servers=None,
                 )
-                _RUN_RESOLVED_IPS[live_cache_key] = list(live_ips)
+                _set_runtime_dns_cache(live_cache_key, live_ips)
             ranked_live_ips, _ = _rank_ips_by_latency(
                 live_ips, timeout=max(0.5, connect_probe_timeout)
             )
@@ -597,7 +691,7 @@ def pixiv(
         alias_host = HOST_ALIAS_MAP.get(req_host)
         if alias_host and runtime_dns_resolve:
             alias_cache_key = f"{alias_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
-            alias_ips = _RUN_RESOLVED_IPS.get(alias_cache_key)
+            alias_ips = _get_runtime_dns_cache(alias_cache_key)
             if alias_ips is None:
                 alias_ips = _resolve_host_ips(
                     alias_host,
@@ -607,7 +701,7 @@ def pixiv(
                     proxies=proxies,
                     max_doh_servers=None,
                 )
-                _RUN_RESOLVED_IPS[alias_cache_key] = list(alias_ips)
+                _set_runtime_dns_cache(alias_cache_key, alias_ips)
             ranked_alias_ips, _ = _rank_ips_by_latency(
                 alias_ips, timeout=max(0.5, connect_probe_timeout)
             )
@@ -627,7 +721,11 @@ def pixiv(
                         proxies=proxies,
                         timeout=(8, timeout),
                     )
-                except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
+                except (
+                    RequestsConnectionError,
+                    RequestsTimeout,
+                    RequestsSSLError,
+                ) as exc:
                     last_exc = exc
                     continue
 
@@ -649,7 +747,9 @@ def pixiv(
             or _read_refresh_token_file()
         )
         if not refresh_token:
-            raise ValueError("Missing refresh_token. Pass it or set PIXIV_REFRESH_TOKEN.")
+            raise ValueError(
+                "Missing refresh_token. Pass it or set PIXIV_REFRESH_TOKEN."
+            )
 
         now = _pixiv_client_time()
         x_client_hash = hashlib.md5((now + PIXIV_HASH_SALT).encode("utf-8")).hexdigest()
@@ -764,7 +864,9 @@ def pixiv(
                 for illust in illusts:
                     if not isinstance(illust, dict):
                         continue
-                    if not _match_author(illust, author_id=author_id, author_name=author_name):
+                    if not _match_author(
+                        illust, author_id=author_id, author_name=author_name
+                    ):
                         continue
                     matched += 1
                     if random.randrange(matched) == 0:
@@ -795,7 +897,9 @@ def pixiv(
                 },
             }
 
-        sampled_user = sampled.get("user") if isinstance(sampled.get("user"), dict) else {}
+        sampled_user = (
+            sampled.get("user") if isinstance(sampled.get("user"), dict) else {}
+        )
         tags: list[str] = []
         raw_tags = sampled.get("tags")
         if isinstance(raw_tags, list):
@@ -845,6 +949,40 @@ def pixiv(
             "status": image_res.status_code,
             "content_type": image_res.headers.get("Content-Type"),
             "content": image_res.content,
+        }
+
+    # 3.1) 动图元数据访问。
+    if action == "ugoira_metadata":
+        illust_id = params.get("illust_id")
+        if not illust_id:
+            raise ValueError("action=ugoira_metadata requires params.illust_id")
+        api_url = f"{API_BASE}/v1/ugoira/metadata"
+        res = send("GET", api_url, req_params={"illust_id": illust_id}, with_auth=True)
+        try:
+            data = res.json()
+        except Exception:
+            data = {"raw": res.text}
+        return {
+            "ok": res.ok,
+            "action": action,
+            "status": res.status_code,
+            "data": data,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
+
+    # 3.2) 动图 zip 文件下载。
+    if action == "ugoira_zip":
+        zip_url = params.get("url")
+        if not zip_url:
+            raise ValueError("action=ugoira_zip requires params.url")
+        zip_res = send("GET", str(zip_url), image_mode=True)
+        return {
+            "ok": zip_res.ok,
+            "action": action,
+            "status": zip_res.status_code,
+            "content_type": zip_res.headers.get("Content-Type"),
+            "content": zip_res.content,
         }
 
     # 4) Pixiv API 访问。
