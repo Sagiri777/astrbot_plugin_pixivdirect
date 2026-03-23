@@ -453,6 +453,37 @@ def _match_author(
     return True
 
 
+def _match_illust_tag(
+    illust: dict[str, Any],
+    tag: str | None,
+) -> bool:
+    """Check if the illust's own tags contain the specified tag (case-insensitive)."""
+    if not tag:
+        return True
+    raw_tags = illust.get("tags")
+    if not isinstance(raw_tags, list):
+        return False
+    tag_lower = tag.lower()
+    for item in raw_tags:
+        if isinstance(item, dict):
+            name = item.get("name")
+            translated_name = item.get("translated_name")
+            if isinstance(name, str) and name.lower() == tag_lower:
+                return True
+            if (
+                isinstance(translated_name, str)
+                and translated_name.lower() == tag_lower
+            ):
+                return True
+    return False
+
+
+def _is_r18_illust(illust: dict[str, Any]) -> bool:
+    """Check if the illust is R18 based on x_restrict field."""
+    x_restrict = illust.get("x_restrict")
+    return isinstance(x_restrict, int) and x_restrict >= 1
+
+
 def _safe_download_filename(url: str, fallback_id: Any) -> str:
     path = urlsplit(url).path
     name = os.path.basename(path).strip()
@@ -864,6 +895,10 @@ def pixiv(
             max_pages = max(1, int(str(max_pages_raw)))
         status_code = 200
 
+        # First, try with bookmark tag filter (API-level)
+        # If no results, fall back to filtering by illust's own tags
+        use_illust_tag_filter = False
+
         next_url: str | None = f"{API_BASE}{API_ACTIONS['user_bookmarks_illust']}"
         next_params: dict[str, Any] | None = list_params
 
@@ -893,6 +928,8 @@ def pixiv(
                         illust, author_id=author_id, author_name=author_name
                     ):
                         continue
+                    if use_illust_tag_filter and not _match_illust_tag(illust, tag):
+                        continue
                     matched += 1
                     if random.randrange(matched) == 0:
                         sampled = illust
@@ -905,6 +942,46 @@ def pixiv(
                 next_url = None
             if pages >= max_pages:
                 next_url = None
+
+        # If no results with bookmark tag, retry filtering by illust's own tags
+        if not sampled and tag and not use_illust_tag_filter:
+            use_illust_tag_filter = True
+            matched = 0
+            pages = 0
+            next_url = f"{API_BASE}{API_ACTIONS['user_bookmarks_illust']}"
+            next_params = {"user_id": bookmark_user_id, "restrict": restrict}
+
+            while next_url:
+                page_res = send("GET", next_url, req_params=next_params, with_auth=True)
+                status_code = page_res.status_code
+                if not page_res.ok:
+                    break
+
+                page_data = page_res.json()
+                pages += 1
+                illusts = page_data.get("illusts")
+                if isinstance(illusts, list):
+                    for illust in illusts:
+                        if not isinstance(illust, dict):
+                            continue
+                        if not _match_author(
+                            illust, author_id=author_id, author_name=author_name
+                        ):
+                            continue
+                        if not _match_illust_tag(illust, tag):
+                            continue
+                        matched += 1
+                        if random.randrange(matched) == 0:
+                            sampled = illust
+
+                next_url_val = page_data.get("next_url")
+                if isinstance(next_url_val, str) and next_url_val:
+                    next_url = next_url_val
+                    next_params = None
+                else:
+                    next_url = None
+                if pages >= max_pages:
+                    next_url = None
 
         if not sampled:
             return {

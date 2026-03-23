@@ -218,6 +218,7 @@ class PixivDirectPlugin(Star):
         self._last_command_ts: dict[str, float] = {}
         self._dns_next_refresh_at: float = 0.0
         self._share_enabled: bool = False  # Share disabled by default
+        self._emoji_reaction_enabled: bool = False  # Emoji reaction disabled by default
         self._idle_cache_task: asyncio.Task | None = None
         self._last_idle_cache_ts: float = 0.0
 
@@ -632,6 +633,11 @@ class PixivDirectPlugin(Star):
 
     async def _add_emoji_reaction(self, event: AstrMessageEvent, stage: str) -> None:
         """为当前消息添加阶段相关的表情回应"""
+        # Check if emoji reaction is enabled
+        if not self._emoji_reaction_enabled:
+            logger.info("[pixivdirect] Emoji reaction is disabled, skipping")
+            return
+
         try:
             # 调试日志
             logger.info(f"[pixivdirect] _add_emoji_reaction called for stage: {stage}")
@@ -865,6 +871,12 @@ class PixivDirectPlugin(Star):
 
         if loose_text and "tag" not in params:
             params["tag"] = " ".join(loose_text)
+
+        # Normalize common tag aliases (e.g. R18 -> R-18).
+        if "tag" in params:
+            tag_value = str(params["tag"]).strip()
+            if tag_value.upper() == "R18":
+                params["tag"] = "R-18"
 
         if "author_id" in params:
             try:
@@ -1414,7 +1426,21 @@ class PixivDirectPlugin(Star):
 
         if error:
             await self._add_emoji_reaction(event, "error")
-            yield event.plain_result(f"获取随机收藏失败：{error}")
+            # Provide helpful hints for common "no match" errors
+            error_msg = f"获取随机收藏失败：{error}"
+            if "No bookmarked illust matched filters" in error:
+                tag_hint = filter_params.get("tag")
+                if tag_hint:
+                    error_msg += f"\n\n提示：收藏中没有找到标签为「{tag_hint}」的作品。可能的原因："
+                    error_msg += "\n1. 收藏中确实没有该标签的作品"
+                    error_msg += "\n2. 标签名称不正确（Pixiv 标签区分大小写）"
+                    error_msg += "\n3. 该标签的作品可能未被收藏"
+                    if str(tag_hint).upper() in ("R18", "R-18"):
+                        error_msg += "\n\nR18 相关提示："
+                        error_msg += "\n- Pixiv 上 R18 标签通常是「R-18」"
+                        error_msg += "\n- 请确保收藏中确实有 R18 作品"
+                        error_msg += "\n- 可尝试使用「restrict=private」查看私密收藏"
+            yield event.plain_result(error_msg)
             return
 
         picked = await self._pop_cached_item(user_key, cache_key)
