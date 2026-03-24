@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import random
 import re
 import time
 import zipfile
@@ -21,7 +22,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 from .pixivSDK import pixiv
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "0.1.0")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.0.1")
 class PixivDirectPlugin(Star):
     # Emoji ID mapping for different stages (参考emojiReply)
     EMOJI_MAP = {
@@ -200,8 +201,8 @@ class PixivDirectPlugin(Star):
     _MIN_COMMAND_INTERVAL_SECONDS = 2.0
     _MAX_RANDOM_PAGES = 8
     _MAX_RANDOM_WARMUP = 3
-    _IDLE_CACHE_INTERVAL_SECONDS = 300  # 5 minutes between idle cache runs
-    _IDLE_CACHE_COUNT = 2  # Number of items to cache per user during idle
+    _IDLE_CACHE_INTERVAL_SECONDS = 3600  # 1 hour between idle cache runs
+    _IDLE_CACHE_COUNT = 5  # Number of items to cache per user during idle
     _DEFAULT_CACHE_SIZE = 10  # Default minimum cache size to maintain
     _DEFAULT_POOL_KEY = "__all__"  # Unified cache pool key per user
 
@@ -253,6 +254,18 @@ class PixivDirectPlugin(Star):
     def _load_tokens(self) -> None:
         if not self._token_file.exists():
             self._token_map = {}
+            # Create default token file with empty users map
+            try:
+                self._token_file.parent.mkdir(parents=True, exist_ok=True)
+                default = {"users": {}}
+                self._token_file.write_text(
+                    json.dumps(default, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default token file: %s", exc
+                )
             return
         try:
             raw = json.loads(self._token_file.read_text(encoding="utf-8"))
@@ -277,6 +290,14 @@ class PixivDirectPlugin(Star):
     def _load_cache_index(self) -> None:
         if not self._cache_index_file.exists():
             self._random_cache = {}
+            # Create default cache index file
+            try:
+                self._cache_dir.mkdir(parents=True, exist_ok=True)
+                self._cache_index_file.write_text("{}\n", encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default cache index file: %s", exc
+                )
             return
         try:
             raw = json.loads(self._cache_index_file.read_text(encoding="utf-8"))
@@ -341,6 +362,18 @@ class PixivDirectPlugin(Star):
     def _load_share_config(self) -> None:
         if not self._share_config_file.exists():
             self._share_enabled = False
+            # Create default share config
+            try:
+                self._share_config_file.parent.mkdir(parents=True, exist_ok=True)
+                self._share_config_file.write_text(
+                    json.dumps({"share_enabled": False}, ensure_ascii=False, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default share config: %s", exc
+                )
             return
         try:
             raw = json.loads(self._share_config_file.read_text(encoding="utf-8"))
@@ -374,6 +407,18 @@ class PixivDirectPlugin(Star):
     def _load_r18_config(self) -> None:
         if not self._r18_config_file.exists():
             self._r18_in_group = False
+            # Create default r18 config
+            try:
+                self._r18_config_file.parent.mkdir(parents=True, exist_ok=True)
+                self._r18_config_file.write_text(
+                    json.dumps({"r18_in_group": False}, ensure_ascii=False, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default r18 config: %s", exc
+                )
             return
         try:
             raw = json.loads(self._r18_config_file.read_text(encoding="utf-8"))
@@ -407,6 +452,14 @@ class PixivDirectPlugin(Star):
     def _load_idle_cache_queue(self) -> None:
         if not self._idle_cache_queue_file.exists():
             self._idle_cache_queue = {}
+            # Create default idle cache queue file
+            try:
+                self._idle_cache_queue_file.parent.mkdir(parents=True, exist_ok=True)
+                self._idle_cache_queue_file.write_text("{}\n", encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default idle_cache_queue: %s", exc
+                )
             return
         try:
             raw = json.loads(self._idle_cache_queue_file.read_text(encoding="utf-8"))
@@ -457,6 +510,18 @@ class PixivDirectPlugin(Star):
     def _load_unique_config(self) -> None:
         if not self._unique_config_file.exists():
             self._random_unique = False
+            # Create default unique config
+            try:
+                self._unique_config_file.parent.mkdir(parents=True, exist_ok=True)
+                self._unique_config_file.write_text(
+                    json.dumps({"random_unique": False}, ensure_ascii=False, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default unique config: %s", exc
+                )
             return
         try:
             raw = json.loads(self._unique_config_file.read_text(encoding="utf-8"))
@@ -490,6 +555,14 @@ class PixivDirectPlugin(Star):
     def _load_group_blocked_tags(self) -> None:
         if not self._group_blocked_tags_file.exists():
             self._group_blocked_tags = {}
+            # Create default group blocked tags file
+            try:
+                self._group_blocked_tags_file.parent.mkdir(parents=True, exist_ok=True)
+                self._group_blocked_tags_file.write_text("{}\n", encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default group_blocked_tags: %s", exc
+                )
             return
         try:
             raw = json.loads(self._group_blocked_tags_file.read_text(encoding="utf-8"))
@@ -1289,7 +1362,8 @@ class PixivDirectPlugin(Star):
 
         If filter_params is provided, scans the unified pool for a matching item.
         Otherwise falls back to exact cache_key lookup (legacy behavior).
-        When _random_unique is False, returns the item without removing from pool.
+        When _random_unique is False, returns a random item without removing from pool.
+        When _random_unique is True, removes and returns the first matching item.
         """
         async with self._cache_lock:
             user_cache = self._random_cache.get(user_key)
@@ -1300,26 +1374,52 @@ class PixivDirectPlugin(Star):
             if filter_params:
                 pool = user_cache.get(self._DEFAULT_POOL_KEY)
                 if pool:
-                    for i, item in enumerate(pool):
-                        path = item.get("path")
-                        if not (isinstance(path, str) and path and Path(path).exists()):
-                            continue
-                        if self._item_matches_filter(item, filter_params):
-                            if self._random_unique:
+                    if self._random_unique:
+                        # Original behavior: return first matching item and remove it
+                        for i, item in enumerate(pool):
+                            path = item.get("path")
+                            if not (
+                                isinstance(path, str) and path and Path(path).exists()
+                            ):
+                                continue
+                            if self._item_matches_filter(item, filter_params):
                                 pool.pop(i)
-                            return item
+                                return item
+                    else:
+                        # Random selection: collect all matching items and pick one randomly
+                        matching_items = []
+                        for item in pool:
+                            path = item.get("path")
+                            if not (
+                                isinstance(path, str) and path and Path(path).exists()
+                            ):
+                                continue
+                            if self._item_matches_filter(item, filter_params):
+                                matching_items.append(item)
+                        if matching_items:
+                            return random.choice(matching_items)
 
             # Fallback: try exact cache_key match (legacy or no-filter)
             queue = user_cache.get(cache_key)
             if queue:
-                while queue:
-                    if self._random_unique:
+                if self._random_unique:
+                    # Original behavior: pop from front
+                    while queue:
                         item = queue.pop(0)
-                    else:
-                        item = queue[0]
-                    path = item.get("path")
-                    if isinstance(path, str) and path and Path(path).exists():
-                        return item
+                        path = item.get("path")
+                        if isinstance(path, str) and path and Path(path).exists():
+                            return item
+                else:
+                    # Random selection from queue
+                    valid_items = [
+                        item
+                        for item in queue
+                        if isinstance(item.get("path"), str)
+                        and item.get("path")
+                        and Path(item.get("path")).exists()
+                    ]
+                    if valid_items:
+                        return random.choice(valid_items)
             return None
 
     def _count_matching_items(
@@ -1862,7 +1962,6 @@ class PixivDirectPlugin(Star):
 
         yield event.plain_result("未知类型，请使用 i（作品）或 a（作者）。")
 
-    async def _handle_random(self, event: AstrMessageEvent, args: list[str]):
         # 1) share 配置命令（不需要 token）
         if len(args) >= 2 and args[1].lower() == "share":
             if len(args) >= 3:
@@ -1870,18 +1969,36 @@ class PixivDirectPlugin(Star):
                 if value in ("true", "1", "yes", "on"):
                     self._share_enabled = True
                     await self._save_share_config()
+                    # Ensure in-memory state reflects the persisted value
+                    self._load_share_config()
                     yield event.plain_result("已开启收藏分享功能。")
                     return
                 elif value in ("false", "0", "no", "off"):
                     self._share_enabled = False
                     await self._save_share_config()
+                    # Ensure in-memory state reflects the persisted value
+                    self._load_share_config()
                     yield event.plain_result("已关闭收藏分享功能。")
                     return
                 else:
                     yield event.plain_result("无效的值，请使用 true 或 false。")
                     return
             else:
-                status = "开启" if self._share_enabled else "关闭"
+                # Read persisted value first to present the accurate current state
+                persisted = None
+                try:
+                    if self._share_config_file.exists():
+                        raw = json.loads(
+                            self._share_config_file.read_text(encoding="utf-8")
+                        )
+                        if isinstance(raw, dict):
+                            persisted = bool(raw.get("share_enabled", False))
+                except Exception:
+                    persisted = None
+                if isinstance(persisted, bool):
+                    status = "开启" if persisted else "关闭"
+                else:
+                    status = "开启" if self._share_enabled else "关闭"
                 yield event.plain_result(f"收藏分享功能当前状态：{status}")
                 return
 
