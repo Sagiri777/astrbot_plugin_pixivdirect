@@ -16,13 +16,12 @@ from PIL import Image
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
-from astrbot.core.star.filter.command import GreedyStr
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .pixivSDK import pixiv
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.0.5")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.0.6")
 class PixivDirectPlugin(Star):
     # Emoji ID mapping for different stages (参考emojiReply)
     EMOJI_MAP = {
@@ -2374,59 +2373,36 @@ class PixivDirectPlugin(Star):
                 f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}\n⚠️ R-18 内容在群聊中仅显示信息"
             )
 
-    @filter.command_group("pixiv")
-    def pixiv_group(self):
-        """Pixiv command group."""
-
-    @pixiv_group.command("help")
-    async def pixiv_help(self, event: AstrMessageEvent):
-        """Show Pixiv command usages."""
+    @filter.command("pixiv")
+    async def pixiv_command(self, event: AstrMessageEvent, args_str: str = ""):
+        """Pixiv commands: help, login, id, random."""
         limited = await self._rate_limit_message(event)
         if limited:
             await self._add_emoji_reaction(event, "rate_limit")
             yield event.plain_result(limited)
             return
-        await self._add_emoji_reaction(event, "help")
-        yield event.plain_result(self._help_text())
 
-    @pixiv_group.command("login")
-    async def pixiv_login(self, event: AstrMessageEvent, refresh_token: str = ""):
-        """Bind user's Pixiv refresh token."""
-        limited = await self._rate_limit_message(event)
-        if limited:
-            await self._add_emoji_reaction(event, "rate_limit")
-            yield event.plain_result(limited)
-            return
-        async for result in self._handle_login(event, ["login", refresh_token]):
-            yield result
+        tokens = (
+            [t for t in re.split(r"\s+", args_str.strip()) if t] if args_str else []
+        )
+        sub_cmd = tokens[0].lower() if tokens else "help"
 
-    @pixiv_group.command("id")
-    async def pixiv_id(
-        self, event: AstrMessageEvent, target_type: str = "", target_id: str = ""
-    ):
-        """Query Pixiv by illust id or artist id."""
-        limited = await self._rate_limit_message(event)
-        if limited:
-            await self._add_emoji_reaction(event, "rate_limit")
-            yield event.plain_result(limited)
-            return
-        async for result in self._handle_id(event, ["id", target_type, target_id]):
-            yield result
-
-    @pixiv_group.command("random")
-    async def pixiv_random(self, event: AstrMessageEvent, filter_text: GreedyStr):
-        """Get a random bookmarked image with optional filters."""
-        limited = await self._rate_limit_message(event)
-        if limited:
-            await self._add_emoji_reaction(event, "rate_limit")
-            yield event.plain_result(limited)
-            return
-        filter_tokens = [
-            token for token in re.split(r"\s+", str(filter_text).strip()) if token
-        ]
-        args = ["random", *filter_tokens]
-        async for result in self._handle_random(event, args):
-            yield result
+        if sub_cmd == "help":
+            await self._add_emoji_reaction(event, "help")
+            yield event.plain_result(self._help_text())
+        elif sub_cmd == "login":
+            async for result in self._handle_login(event, ["login", *tokens[1:]]):
+                yield result
+        elif sub_cmd == "id":
+            async for result in self._handle_id(event, ["id", *tokens[1:]]):
+                yield result
+        elif sub_cmd == "random":
+            async for result in self._handle_random(event, ["random", *tokens[1:]]):
+                yield result
+        else:
+            yield event.plain_result(
+                f"未知子命令：{sub_cmd}，请使用 /pixiv help 查看帮助。"
+            )
 
     async def terminate(self):
         if self._idle_cache_task and not self._idle_cache_task.done():
