@@ -201,7 +201,7 @@ class PixivDirectPlugin(Star):
     _MIN_COMMAND_INTERVAL_SECONDS = 2.0
     _MAX_RANDOM_PAGES = 8
     _MAX_RANDOM_WARMUP = 3
-    _IDLE_CACHE_INTERVAL_SECONDS = 3600  # 1 hour between idle cache runs
+    _IDLE_CACHE_INTERVAL_SECONDS = 900  # 30 minutes between idle cache runs
     _IDLE_CACHE_COUNT = 5  # Number of items to cache per user during idle
     _DEFAULT_CACHE_SIZE = 10  # Default minimum cache size to maintain
     _DEFAULT_POOL_KEY = "__all__"  # Unified cache pool key per user
@@ -216,7 +216,7 @@ class PixivDirectPlugin(Star):
         self._random_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
         self._last_command_ts: dict[str, float] = {}
         self._dns_next_refresh_at: float = 0.0
-        self._share_enabled: bool = False  # Share disabled by default
+        self._share_enabled: dict[str, bool] = {}  # Per-user share setting
         self._r18_in_group: bool = False  # R-18 in group chat disabled by default
         self._emoji_reaction_enabled: bool = False  # Emoji reaction disabled by default
         self._idle_cache_task: asyncio.Task | None = None
@@ -361,13 +361,12 @@ class PixivDirectPlugin(Star):
 
     def _load_share_config(self) -> None:
         if not self._share_config_file.exists():
-            self._share_enabled = False
+            self._share_enabled = {}
             # Create default share config
             try:
                 self._share_config_file.parent.mkdir(parents=True, exist_ok=True)
                 self._share_config_file.write_text(
-                    json.dumps({"share_enabled": False}, ensure_ascii=False, indent=2)
-                    + "\n",
+                    json.dumps({}, ensure_ascii=False, indent=2) + "\n",
                     encoding="utf-8",
                 )
             except Exception as exc:
@@ -379,22 +378,26 @@ class PixivDirectPlugin(Star):
             raw = json.loads(self._share_config_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning(
-                "[pixivdirect] Failed to load share config, using default (disabled)."
+                "[pixivdirect] Failed to load share config, using default (empty)."
             )
-            self._share_enabled = False
+            self._share_enabled = {}
             return
 
         if isinstance(raw, dict):
-            self._share_enabled = bool(raw.get("share_enabled", False))
+            loaded: dict[str, bool] = {}
+            for key, value in raw.items():
+                if isinstance(key, str) and key:
+                    loaded[key] = bool(value)
+            self._share_enabled = loaded
         else:
-            self._share_enabled = False
+            self._share_enabled = {}
 
     async def _save_share_config(self) -> None:
         async with self._cache_lock:
             try:
                 self._share_config_file.write_text(
                     json.dumps(
-                        {"share_enabled": self._share_enabled},
+                        self._share_enabled,
                         ensure_ascii=False,
                         indent=2,
                     )
@@ -1965,41 +1968,25 @@ class PixivDirectPlugin(Star):
     async def _handle_random(self, event: AstrMessageEvent, args: list[str]):
         # 1) share 配置命令（不需要 token）
         if len(args) >= 2 and args[1].lower() == "share":
+            user_key = self._user_key(event)
             if len(args) >= 3:
                 value = args[2].lower()
                 if value in ("true", "1", "yes", "on"):
-                    self._share_enabled = True
+                    self._share_enabled[user_key] = True
                     await self._save_share_config()
-                    # Ensure in-memory state reflects the persisted value
-                    self._load_share_config()
                     yield event.plain_result("已开启收藏分享功能。")
                     return
                 elif value in ("false", "0", "no", "off"):
-                    self._share_enabled = False
+                    self._share_enabled[user_key] = False
                     await self._save_share_config()
-                    # Ensure in-memory state reflects the persisted value
-                    self._load_share_config()
                     yield event.plain_result("已关闭收藏分享功能。")
                     return
                 else:
                     yield event.plain_result("无效的值，请使用 true 或 false。")
                     return
             else:
-                # Read persisted value first to present the accurate current state
-                persisted = None
-                try:
-                    if self._share_config_file.exists():
-                        raw = json.loads(
-                            self._share_config_file.read_text(encoding="utf-8")
-                        )
-                        if isinstance(raw, dict):
-                            persisted = bool(raw.get("share_enabled", False))
-                except Exception:
-                    persisted = None
-                if isinstance(persisted, bool):
-                    status = "开启" if persisted else "关闭"
-                else:
-                    status = "开启" if self._share_enabled else "关闭"
+                enabled = self._share_enabled.get(user_key, False)
+                status = "开启" if enabled else "关闭"
                 yield event.plain_result(f"收藏分享功能当前状态：{status}")
                 return
 
@@ -2235,9 +2222,9 @@ class PixivDirectPlugin(Star):
                 if not target_user_key:
                     yield event.plain_result(f"未找到用户：{target_user_name}")
                     return
-                if not self._share_enabled:
+                if not self._share_enabled.get(target_user_key, False):
                     yield event.plain_result(
-                        "收藏分享功能未开启，请使用 /pixiv random share true 开启。"
+                        f"用户 {target_user_name} 未开启收藏分享功能。"
                     )
                     return
             else:
