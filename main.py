@@ -16,10 +16,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.star import Context, Star, register
 from astrbot.core.star.filter.command import GreedyStr
-from astrbot.core.utils.astrbot_path import (
-    get_astrbot_plugin_data_path,
-    get_astrbot_temp_path,
-)
+from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .pixivSDK import pixiv
 
@@ -206,6 +203,7 @@ class PixivDirectPlugin(Star):
     _IDLE_CACHE_INTERVAL_SECONDS = 300  # 5 minutes between idle cache runs
     _IDLE_CACHE_COUNT = 2  # Number of items to cache per user during idle
     _DEFAULT_CACHE_SIZE = 10  # Default minimum cache size to maintain
+    _DEFAULT_POOL_KEY = "__all__"  # Unified cache pool key per user
 
     def __init__(self, context: Context):
         super().__init__(context)
@@ -214,20 +212,30 @@ class PixivDirectPlugin(Star):
         self._cache_lock = asyncio.Lock()
         self._rate_limit_lock = asyncio.Lock()
         self._token_map: dict[str, str] = {}
-        self._random_cache: dict[str, dict[str, list[dict[str, str]]]] = {}
+        self._random_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
         self._last_command_ts: dict[str, float] = {}
         self._dns_next_refresh_at: float = 0.0
         self._share_enabled: bool = False  # Share disabled by default
+        self._r18_in_group: bool = False  # R-18 in group chat disabled by default
         self._emoji_reaction_enabled: bool = False  # Emoji reaction disabled by default
         self._idle_cache_task: asyncio.Task | None = None
         self._last_idle_cache_ts: float = 0.0
+        self._idle_cache_queue: dict[str, list[dict[str, Any]]] = {}
+        self._random_unique: bool = False  # Allow duplicate random by default
+        self._group_blocked_tags: dict[str, list[str]] = {}  # Group ID -> blocked tags
 
         self._plugin_data_dir = Path(get_astrbot_plugin_data_path()) / "pixivdirect"
-        self._cache_dir = Path(get_astrbot_temp_path()) / "pixivdirect"
+        self._cache_dir = self._plugin_data_dir / "cache"  # Persistent cache directory
         self._cache_index_file = self._cache_dir / "cache_index.json"
         self._token_file = self._plugin_data_dir / "user_refresh_tokens.json"
         self._host_map_file = self._plugin_data_dir / "pixiv_host_map.json"
         self._share_config_file = self._plugin_data_dir / "share_config.json"
+        self._r18_config_file = self._plugin_data_dir / "r18_config.json"
+        self._idle_cache_queue_file = self._plugin_data_dir / "idle_cache_queue.json"
+        self._unique_config_file = self._plugin_data_dir / "unique_config.json"
+        self._group_blocked_tags_file = (
+            self._plugin_data_dir / "group_blocked_tags.json"
+        )
 
     async def initialize(self):
         self._plugin_data_dir.mkdir(parents=True, exist_ok=True)
@@ -235,6 +243,10 @@ class PixivDirectPlugin(Star):
         self._load_tokens()
         self._load_cache_index()
         self._load_share_config()
+        self._load_r18_config()
+        self._load_idle_cache_queue()
+        self._load_unique_config()
+        self._load_group_blocked_tags()
         # Start idle cache task
         self._idle_cache_task = asyncio.create_task(self._idle_cache_loop())
 
@@ -279,24 +291,47 @@ class PixivDirectPlugin(Star):
             self._random_cache = {}
             return
 
-        loaded_cache: dict[str, dict[str, list[dict[str, str]]]] = {}
+        loaded_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
         for user_key, user_cache in raw.items():
             if not isinstance(user_key, str) or not isinstance(user_cache, dict):
                 continue
-            loaded_user_cache: dict[str, list[dict[str, str]]] = {}
+            loaded_user_cache: dict[str, list[dict[str, Any]]] = {}
             for cache_key, items in user_cache.items():
                 if not isinstance(cache_key, str) or not isinstance(items, list):
                     continue
-                valid_items: list[dict[str, str]] = []
+                valid_items: list[dict[str, Any]] = []
                 for item in items:
                     if isinstance(item, dict):
                         path = item.get("path")
-                        caption = item.get("caption")
                         if isinstance(path, str) and path and Path(path).exists():
-                            if isinstance(caption, str):
-                                valid_items.append({"path": path, "caption": caption})
-                            else:
-                                valid_items.append({"path": path, "caption": ""})
+                            preserved: dict[str, Any] = {"path": path}
+                            caption = item.get("caption")
+                            preserved["caption"] = (
+                                caption if isinstance(caption, str) else ""
+                            )
+                            x_restrict = item.get("x_restrict")
+                            preserved["x_restrict"] = (
+                                x_restrict if isinstance(x_restrict, int) else 0
+                            )
+                            tags = item.get("tags")
+                            preserved["tags"] = (
+                                [t for t in tags if isinstance(t, str)]
+                                if isinstance(tags, list)
+                                else []
+                            )
+                            illust_id = item.get("illust_id")
+                            preserved["illust_id"] = (
+                                illust_id if isinstance(illust_id, int) else None
+                            )
+                            author_id = item.get("author_id")
+                            preserved["author_id"] = (
+                                author_id if isinstance(author_id, (int, str)) else None
+                            )
+                            author_name = item.get("author_name")
+                            preserved["author_name"] = (
+                                author_name if isinstance(author_name, str) else ""
+                            )
+                            valid_items.append(preserved)
                 if valid_items:
                     loaded_user_cache[cache_key] = valid_items
             if loaded_user_cache:
@@ -336,6 +371,160 @@ class PixivDirectPlugin(Star):
             except OSError as exc:
                 logger.warning("[pixivdirect] Failed to save share config: %s", exc)
 
+    def _load_r18_config(self) -> None:
+        if not self._r18_config_file.exists():
+            self._r18_in_group = False
+            return
+        try:
+            raw = json.loads(self._r18_config_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load r18 config, using default (disabled)."
+            )
+            self._r18_in_group = False
+            return
+
+        if isinstance(raw, dict):
+            self._r18_in_group = bool(raw.get("r18_in_group", False))
+        else:
+            self._r18_in_group = False
+
+    async def _save_r18_config(self) -> None:
+        async with self._cache_lock:
+            try:
+                self._r18_config_file.write_text(
+                    json.dumps(
+                        {"r18_in_group": self._r18_in_group},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning("[pixivdirect] Failed to save r18 config: %s", exc)
+
+    def _load_idle_cache_queue(self) -> None:
+        if not self._idle_cache_queue_file.exists():
+            self._idle_cache_queue = {}
+            return
+        try:
+            raw = json.loads(self._idle_cache_queue_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load idle cache queue, using empty queue."
+            )
+            self._idle_cache_queue = {}
+            return
+
+        if not isinstance(raw, dict):
+            self._idle_cache_queue = {}
+            return
+
+        loaded: dict[str, list[dict[str, Any]]] = {}
+        for user_key, queue in raw.items():
+            if not isinstance(user_key, str) or not isinstance(queue, list):
+                continue
+            valid_items: list[dict[str, Any]] = []
+            for item in queue:
+                if isinstance(item, dict):
+                    filter_params = item.get("filter_params")
+                    if isinstance(filter_params, dict):
+                        count = item.get("count", 1)
+                        remaining = item.get("remaining", count)
+                        valid_items.append(
+                            {
+                                "filter_params": filter_params,
+                                "count": count,
+                                "remaining": remaining,
+                            }
+                        )
+            if valid_items:
+                loaded[user_key] = valid_items
+        self._idle_cache_queue = loaded
+
+    async def _save_idle_cache_queue(self) -> None:
+        async with self._cache_lock:
+            try:
+                self._idle_cache_queue_file.write_text(
+                    json.dumps(self._idle_cache_queue, ensure_ascii=False, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning("[pixivdirect] Failed to save idle cache queue: %s", exc)
+
+    def _load_unique_config(self) -> None:
+        if not self._unique_config_file.exists():
+            self._random_unique = False
+            return
+        try:
+            raw = json.loads(self._unique_config_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load unique config, using default (disabled)."
+            )
+            self._random_unique = False
+            return
+
+        if isinstance(raw, dict):
+            self._random_unique = bool(raw.get("random_unique", False))
+        else:
+            self._random_unique = False
+
+    async def _save_unique_config(self) -> None:
+        async with self._cache_lock:
+            try:
+                self._unique_config_file.write_text(
+                    json.dumps(
+                        {"random_unique": self._random_unique},
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning("[pixivdirect] Failed to save unique config: %s", exc)
+
+    def _load_group_blocked_tags(self) -> None:
+        if not self._group_blocked_tags_file.exists():
+            self._group_blocked_tags = {}
+            return
+        try:
+            raw = json.loads(self._group_blocked_tags_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load group blocked tags, using empty mapping."
+            )
+            self._group_blocked_tags = {}
+            return
+
+        if not isinstance(raw, dict):
+            self._group_blocked_tags = {}
+            return
+
+        loaded: dict[str, list[str]] = {}
+        for group_id, tags in raw.items():
+            if isinstance(group_id, str) and isinstance(tags, list):
+                valid_tags = [t for t in tags if isinstance(t, str) and t]
+                if valid_tags:
+                    loaded[group_id] = valid_tags
+        self._group_blocked_tags = loaded
+
+    async def _save_group_blocked_tags(self) -> None:
+        async with self._cache_lock:
+            try:
+                self._group_blocked_tags_file.write_text(
+                    json.dumps(self._group_blocked_tags, ensure_ascii=False, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to save group blocked tags: %s", exc
+                )
+
     async def _idle_cache_loop(self) -> None:
         while True:
             try:
@@ -370,8 +559,7 @@ class PixivDirectPlugin(Star):
 
     async def _idle_cache_user(self, user_key: str, refresh_token: str) -> None:
         user_cache = self._random_cache.get(user_key, {})
-        default_cache_key = self._cache_key({"restrict": "public", "max_pages": 3})
-        current_queue = user_cache.get(default_cache_key, [])
+        current_queue = user_cache.get(self._DEFAULT_POOL_KEY, [])
 
         if len(current_queue) >= self._DEFAULT_CACHE_SIZE:
             return
@@ -379,10 +567,28 @@ class PixivDirectPlugin(Star):
         items_to_add = self._DEFAULT_CACHE_SIZE - len(current_queue)
         items_to_add = min(items_to_add, self._IDLE_CACHE_COUNT)
 
+        # Check if user has queued filter params for idle cache
+        user_queue = self._idle_cache_queue.get(user_key, [])
         filter_params = {"restrict": "public", "max_pages": 3}
+
+        if user_queue:
+            queue_item = user_queue[0]
+            filter_params = queue_item.get("filter_params", filter_params)
+            remaining = queue_item.get("remaining", 1)
+
+            if remaining != "always":
+                remaining = int(remaining) - 1
+                if remaining <= 0:
+                    user_queue.pop(0)
+                else:
+                    queue_item["remaining"] = remaining
+                if not user_queue:
+                    self._idle_cache_queue.pop(user_key, None)
+                await self._save_idle_cache_queue()
+
         latest_refresh_token, error = await self._enqueue_random_items(
             user_key=user_key,
-            cache_key=default_cache_key,
+            cache_key=self._DEFAULT_POOL_KEY,
             refresh_token=refresh_token,
             filter_params=filter_params,
             count=items_to_add,
@@ -393,8 +599,14 @@ class PixivDirectPlugin(Star):
                 "[pixivdirect] Idle cache error for user %s: %s", user_key, error
             )
         else:
+            filter_desc = (
+                filter_params.get("tag") or filter_params.get("author") or "default"
+            )
             logger.info(
-                "[pixivdirect] Cached %d items for user %s", items_to_add, user_key
+                "[pixivdirect] Cached %d items for user %s (filter: %s)",
+                items_to_add,
+                user_key,
+                filter_desc,
             )
 
     async def _save_cache_index(self) -> None:
@@ -573,6 +785,11 @@ class PixivDirectPlugin(Star):
         if tags_text:
             lines.append(f"🏷️ {tags_text}")
 
+        # R-18 indicator
+        x_restrict = item.get("x_restrict", 0)
+        if isinstance(x_restrict, int) and x_restrict > 0:
+            lines.append("🔞 R-18 内容")
+
         # 显示匹配信息（如果有）
         if matched_count is not None:
             lines.append(f"🎯 匹配: {matched_count}个作品")
@@ -598,6 +815,25 @@ class PixivDirectPlugin(Star):
             return f"请求过于频繁，请在 {wait_seconds:.1f} 秒后重试。"
         return None
 
+    @staticmethod
+    def _next_dns_refresh_time() -> float:
+        """Calculate the next 4 AM timestamp for DNS refresh."""
+        from datetime import datetime, timedelta
+
+        now = datetime.now()
+        target_hour = 4  # 4 AM
+
+        # Create today's 4 AM
+        today_4am = now.replace(hour=target_hour, minute=0, second=0, microsecond=0)
+
+        # If it's already past 4 AM today, schedule for tomorrow 4 AM
+        if now >= today_4am:
+            next_refresh = today_4am + timedelta(days=1)
+        else:
+            next_refresh = today_4am
+
+        return next_refresh.timestamp()
+
     async def _consume_dns_refresh_flag(self) -> bool:
         now = time.time()
         if now < self._dns_next_refresh_at:
@@ -609,27 +845,33 @@ class PixivDirectPlugin(Star):
                 return False
 
             if not self._host_map_file.exists():
-                self._dns_next_refresh_at = now + self._DNS_REFRESH_RETRY_SECONDS
+                self._dns_next_refresh_at = self._next_dns_refresh_time()
                 return True
 
             try:
-                age = now - self._host_map_file.stat().st_mtime
+                file_mtime = self._host_map_file.stat().st_mtime
             except OSError:
-                self._dns_next_refresh_at = now + self._DNS_REFRESH_RETRY_SECONDS
+                self._dns_next_refresh_at = self._next_dns_refresh_time()
                 return True
 
-            if age >= self._DNS_REFRESH_INTERVAL_SECONDS:
-                self._dns_next_refresh_at = now + self._DNS_REFRESH_RETRY_SECONDS
-                return True
+            # Check if it's past 4 AM and file was modified before today's 4 AM
+            from datetime import datetime
 
-            self._dns_next_refresh_at = now + (
-                self._DNS_REFRESH_INTERVAL_SECONDS - max(0.0, age)
+            today_4am = (
+                datetime.now()
+                .replace(hour=4, minute=0, second=0, microsecond=0)
+                .timestamp()
             )
+            if now >= today_4am and file_mtime < today_4am:
+                self._dns_next_refresh_at = self._next_dns_refresh_time()
+                return True
+
+            self._dns_next_refresh_at = self._next_dns_refresh_time()
             return False
 
     async def _mark_dns_refreshed(self) -> None:
         async with self._dns_refresh_lock:
-            self._dns_next_refresh_at = time.time() + self._DNS_REFRESH_INTERVAL_SECONDS
+            self._dns_next_refresh_at = self._next_dns_refresh_time()
 
     async def _add_emoji_reaction(self, event: AstrMessageEvent, stage: str) -> None:
         """为当前消息添加阶段相关的表情回应"""
@@ -790,9 +1032,23 @@ class PixivDirectPlugin(Star):
         frames: list[dict[str, Any]],
         output_path: str,
     ) -> None:
-        """将动图 zip 文件渲染为 GIF。"""
+        """将动图 zip 文件渲染为 GIF，PIL 失败时回退到 ffmpeg。"""
+        try:
+            self._render_ugoira_with_pil(zip_path, frames, output_path)
+        except Exception as pil_exc:
+            logger.warning(
+                "[pixivdirect] PIL GIF render failed: %s, trying ffmpeg", pil_exc
+            )
+            self._render_ugoira_with_ffmpeg(zip_path, frames, output_path)
+
+    def _render_ugoira_with_pil(
+        self,
+        zip_path: str,
+        frames: list[dict[str, Any]],
+        output_path: str,
+    ) -> None:
+        """使用 PIL 将动图 zip 渲染为 GIF。"""
         with zipfile.ZipFile(zip_path, "r") as zip_file:
-            # 构建帧文件名到延迟的映射
             frame_delays = {}
             for frame in frames:
                 file_name = frame.get("file", "")
@@ -800,7 +1056,6 @@ class PixivDirectPlugin(Star):
                 if file_name:
                     frame_delays[file_name] = delay
 
-            # 获取 zip 中的所有图像文件并排序
             image_files = sorted(
                 [
                     f
@@ -812,24 +1067,20 @@ class PixivDirectPlugin(Star):
             if not image_files:
                 raise RuntimeError("动图 zip 文件中没有找到图像文件。")
 
-            # 读取所有帧
             pil_frames = []
             delays = []
             for image_file in image_files:
                 with zip_file.open(image_file) as f:
                     img = Image.open(io.BytesIO(f.read()))
-                    # 转换为 RGB 模式（如果需要）
                     if img.mode != "RGB":
                         img = img.convert("RGB")
                     pil_frames.append(img)
-                    # 获取延迟时间（毫秒）
                     delay = frame_delays.get(image_file, 100)
                     delays.append(delay)
 
             if not pil_frames:
                 raise RuntimeError("无法读取动图帧。")
 
-            # 保存为 GIF
             pil_frames[0].save(
                 output_path,
                 save_all=True,
@@ -838,6 +1089,82 @@ class PixivDirectPlugin(Star):
                 loop=0,
                 optimize=True,
             )
+
+    def _render_ugoira_with_ffmpeg(
+        self,
+        zip_path: str,
+        frames: list[dict[str, Any]],
+        output_path: str,
+    ) -> None:
+        """使用 ffmpeg 将动图 zip 渲染为 GIF。"""
+        import shutil
+        import subprocess
+        import tempfile
+
+        if not shutil.which("ffmpeg"):
+            raise RuntimeError("ffmpeg 未安装，无法渲染动图。")
+
+        frame_delays = {}
+        for frame in frames:
+            file_name = frame.get("file", "")
+            delay = frame.get("delay", 100)
+            if file_name:
+                frame_delays[file_name] = delay
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+
+            with zipfile.ZipFile(zip_path, "r") as zip_file:
+                image_files = sorted(
+                    [
+                        f
+                        for f in zip_file.namelist()
+                        if f.lower().endswith((".jpg", ".jpeg", ".png"))
+                    ]
+                )
+                if not image_files:
+                    raise RuntimeError("动图 zip 文件中没有找到图像文件。")
+
+                for i, image_file in enumerate(image_files):
+                    zip_file.extract(image_file, tmpdir)
+                    src = tmpdir_path / image_file
+                    dst = tmpdir_path / f"frame_{i:05d}.jpg"
+                    src.rename(dst)
+
+            # Build concat file for ffmpeg with per-frame duration
+            concat_file = tmpdir_path / "concat.txt"
+            concat_lines = []
+            for i, image_file in enumerate(image_files):
+                delay_ms = frame_delays.get(image_file, 100)
+                duration_sec = delay_ms / 1000.0
+                concat_lines.append(
+                    f"file 'frame_{i:05d}.jpg'\nduration {duration_sec}"
+                )
+            # Repeat last frame (ffmpeg concat requirement)
+            concat_lines.append(f"file 'frame_{len(image_files) - 1:05d}.jpg'")
+            concat_file.write_text("\n".join(concat_lines), encoding="utf-8")
+
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-f",
+                    "concat",
+                    "-safe",
+                    "0",
+                    "-i",
+                    str(concat_file),
+                    "-vf",
+                    "split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse",
+                    "-loop",
+                    "0",
+                    output_path,
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"ffmpeg 渲染动图失败: {result.stderr[:500]}")
 
     @staticmethod
     def _parse_random_filter(filter_tokens: list[str]) -> tuple[dict[str, Any], str]:
@@ -953,22 +1280,150 @@ class PixivDirectPlugin(Star):
         return json.dumps(identity, ensure_ascii=False, sort_keys=True)
 
     async def _pop_cached_item(
-        self, user_key: str, cache_key: str
-    ) -> dict[str, str] | None:
+        self,
+        user_key: str,
+        cache_key: str,
+        filter_params: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """Pop a cached item matching the filter criteria from the user's pool.
+
+        If filter_params is provided, scans the unified pool for a matching item.
+        Otherwise falls back to exact cache_key lookup (legacy behavior).
+        When _random_unique is False, returns the item without removing from pool.
+        """
         async with self._cache_lock:
             user_cache = self._random_cache.get(user_key)
             if not user_cache:
                 return None
-            queue = user_cache.get(cache_key)
-            if not queue:
-                return None
 
-            while queue:
-                item = queue.pop(0)
-                path = item.get("path")
-                if isinstance(path, str) and path and Path(path).exists():
-                    return item
+            # Try unified pool first if filter_params provided
+            if filter_params:
+                pool = user_cache.get(self._DEFAULT_POOL_KEY)
+                if pool:
+                    for i, item in enumerate(pool):
+                        path = item.get("path")
+                        if not (isinstance(path, str) and path and Path(path).exists()):
+                            continue
+                        if self._item_matches_filter(item, filter_params):
+                            if self._random_unique:
+                                pool.pop(i)
+                            return item
+
+            # Fallback: try exact cache_key match (legacy or no-filter)
+            queue = user_cache.get(cache_key)
+            if queue:
+                while queue:
+                    if self._random_unique:
+                        item = queue.pop(0)
+                    else:
+                        item = queue[0]
+                    path = item.get("path")
+                    if isinstance(path, str) and path and Path(path).exists():
+                        return item
             return None
+
+    def _count_matching_items(
+        self, user_key: str, filter_params: dict[str, Any] | None = None
+    ) -> int:
+        """Count cached items matching the given filter criteria."""
+        user_cache = self._random_cache.get(user_key, {})
+        pool = user_cache.get(self._DEFAULT_POOL_KEY, [])
+
+        count = 0
+        for item in pool:
+            path = item.get("path")
+            if not (isinstance(path, str) and path and Path(path).exists()):
+                continue
+            if filter_params and not self._item_matches_filter(item, filter_params):
+                continue
+            count += 1
+        return count
+
+    @staticmethod
+    def _is_r18_item(item: dict[str, Any]) -> bool:
+        """Check if a cached item is R-18 content."""
+        x_restrict = item.get("x_restrict", 0)
+        if isinstance(x_restrict, int) and x_restrict > 0:
+            return True
+        tags = item.get("tags", [])
+        if isinstance(tags, list):
+            for tag in tags:
+                if isinstance(tag, str) and tag.upper() in ("R-18", "R18", "R-18G"):
+                    return True
+        return False
+
+    @staticmethod
+    def _item_matches_filter(
+        item: dict[str, Any], filter_params: dict[str, Any]
+    ) -> bool:
+        """Check if a cached item matches the given filter criteria."""
+        # Tag filter: item tags must include the requested tag (case-insensitive)
+        tag_filter = filter_params.get("tag")
+        if tag_filter:
+            item_tags = item.get("tags", [])
+            if not isinstance(item_tags, list):
+                return False
+            tag_lower = str(tag_filter).lower()
+            if not any(
+                isinstance(t, str) and t.lower() == tag_lower for t in item_tags
+            ):
+                return False
+
+        # Author filter: check caption for author name
+        author_filter = filter_params.get("author")
+        if author_filter:
+            caption = item.get("caption", "")
+            if not isinstance(caption, str):
+                return False
+            if str(author_filter).lower() not in caption.lower():
+                return False
+
+        # Author ID filter: check author_id field or caption
+        author_id_filter = filter_params.get("author_id")
+        if author_id_filter is not None:
+            item_author_id = item.get("author_id")
+            if item_author_id is not None and int(item_author_id) != int(
+                author_id_filter
+            ):
+                return False
+
+        return True
+
+    def _find_cached_by_illust_id(self, illust_id: int) -> dict[str, Any] | None:
+        """Find a cached item by illust_id across all user pools."""
+        for user_cache in self._random_cache.values():
+            pool = user_cache.get(self._DEFAULT_POOL_KEY, [])
+            for item in pool:
+                item_id = item.get("illust_id")
+                if isinstance(item_id, int) and item_id == illust_id:
+                    path = item.get("path")
+                    if isinstance(path, str) and path and Path(path).exists():
+                        return item
+        return None
+
+    def _should_send_image(self, event: AstrMessageEvent, item: dict[str, Any]) -> bool:
+        """Determine if an image should be sent based on R-18 and group tag filtering rules."""
+        is_group = bool(event.get_group_id())
+        if not is_group:
+            return True  # Always send in private chat
+
+        # Check group blocked tags
+        group_id = str(event.get_group_id())
+        blocked_tags = self._group_blocked_tags.get(group_id, [])
+        if blocked_tags:
+            item_tags = item.get("tags", [])
+            if isinstance(item_tags, list):
+                for item_tag in item_tags:
+                    if isinstance(item_tag, str):
+                        for blocked_tag in blocked_tags:
+                            if item_tag.lower() == blocked_tag.lower():
+                                return False  # Tag is blocked in this group
+
+        if self._r18_in_group:
+            return True  # Admin allows R-18 in group
+        if self._is_r18_item(item):
+            return False  # R-18 content blocked in group
+        return True
 
     async def _enqueue_random_items(
         self,
@@ -981,7 +1436,8 @@ class PixivDirectPlugin(Star):
     ) -> tuple[str, str | None]:
         latest_refresh_token = refresh_token
         user_cache = self._random_cache.setdefault(user_key, {})
-        queue = user_cache.setdefault(cache_key, [])
+        # Store all items in unified pool for cross-filter access
+        queue = user_cache.setdefault(self._DEFAULT_POOL_KEY, [])
         pending_items: list[dict[str, Any]] = []
 
         for _ in range(max(1, count)):
@@ -1029,6 +1485,9 @@ class PixivDirectPlugin(Star):
                     "tags": data.get("tags")
                     if isinstance(data.get("tags"), list)
                     else [],
+                    "x_restrict": illust_data.get("x_restrict", 0)
+                    if isinstance(illust_data.get("x_restrict"), int)
+                    else 0,
                     "matched_count": data.get("matched_count"),
                     "pages_scanned": data.get("pages_scanned"),
                     "image_url": image_url,
@@ -1045,7 +1504,7 @@ class PixivDirectPlugin(Star):
 
         semaphore = asyncio.Semaphore(self._RANDOM_DOWNLOAD_CONCURRENCY)
 
-        async def build_cache_item(item: dict[str, Any]) -> dict[str, str]:
+        async def build_cache_item(item: dict[str, Any]) -> dict[str, Any]:
             async with semaphore:
                 local_path = await self._download_image_to_cache(
                     str(item["image_url"]),
@@ -1060,7 +1519,15 @@ class PixivDirectPlugin(Star):
                 matched_count=item.get("matched_count"),
                 pages_scanned=item.get("pages_scanned"),
             )
-            return {"path": local_path, "caption": caption}
+            return {
+                "path": local_path,
+                "caption": caption,
+                "x_restrict": item.get("x_restrict", 0),
+                "tags": item.get("tags", []),
+                "illust_id": item.get("illust_id"),
+                "author_id": item.get("author_id"),
+                "author_name": item.get("author_name"),
+            }
 
         built_items = await asyncio.gather(
             *(build_cache_item(item) for item in pending_items),
@@ -1099,7 +1566,9 @@ class PixivDirectPlugin(Star):
             "- /pixiv id a {artist_id}\n"
             "- /pixiv random [tag=xxx] [author=xxx] [author_id=123] [restrict=public|private] [max_pages=3]\n"
             "- /pixiv random @{用户名称} [筛选条件]  # 查看其他用户的收藏（需先开启分享）\n"
-            "- /pixiv random share true/false  # 开启/关闭收藏分享功能"
+            "- /pixiv random share true/false  # 开启/关闭收藏分享功能\n"
+            "- /pixiv random r18 true/false  # 管理员：开启/关闭群聊 R-18 内容显示\n"
+            "\n筛选条件示例：tag=风景 author=xxx max_pages=5 restrict=private"
         )
 
     async def _handle_login(self, event: AstrMessageEvent, args: list[str]):
@@ -1153,6 +1622,24 @@ class PixivDirectPlugin(Star):
             return
 
         if typ == "i":
+            # Check if already cached before making API call
+            cached_item = self._find_cached_by_illust_id(int(target_id))
+            if cached_item:
+                await self._add_emoji_reaction(event, "cached_illust")
+                caption = cached_item.get("caption") or "Pixiv 作品详情（缓存）"
+                path = cached_item.get("path")
+                if path and self._should_send_image(event, cached_item):
+                    yield (
+                        event.make_result()
+                        .message(f"{caption}\n- 来源: 缓存")
+                        .file_image(path)
+                    )
+                else:
+                    yield event.plain_result(
+                        f"{caption}\n- 来源: 缓存\n⚠️ R-18 内容在群聊中仅显示信息"
+                    )
+                return
+
             await self._add_emoji_reaction(event, "query_illust")
             result = await self._pixiv_call(
                 "illust_detail",
@@ -1255,6 +1742,32 @@ class PixivDirectPlugin(Star):
                     )
 
                     yield event.make_result().message(caption).file_image(str(gif_path))
+
+                    # Cache the ugoira for random pool
+                    try:
+                        _user_key = self._user_key(event)
+                        _user_cache = self._random_cache.setdefault(_user_key, {})
+                        _queue = _user_cache.setdefault(self._DEFAULT_POOL_KEY, [])
+                        _queue.append(
+                            {
+                                "path": str(gif_path),
+                                "caption": caption,
+                                "x_restrict": illust.get("x_restrict", 0)
+                                if isinstance(illust.get("x_restrict"), int)
+                                else 0,
+                                "tags": tags,
+                                "illust_id": int(target_id)
+                                if target_id.isdigit()
+                                else None,
+                            }
+                        )
+                        await self._save_cache_index()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[pixivdirect] Failed to cache ugoira %s: %s",
+                            target_id,
+                            exc,
+                        )
                     return
 
                 except Exception as exc:  # noqa: BLE001
@@ -1287,6 +1800,32 @@ class PixivDirectPlugin(Star):
                         name_prefix=f"illust_{illust.get('id') or target_id}",
                     )
                     yield event.make_result().message(caption).file_image(local_path)
+
+                    # Cache the illust for random pool
+                    try:
+                        _user_key = self._user_key(event)
+                        _user_cache = self._random_cache.setdefault(_user_key, {})
+                        _queue = _user_cache.setdefault(self._DEFAULT_POOL_KEY, [])
+                        _queue.append(
+                            {
+                                "path": local_path,
+                                "caption": caption,
+                                "x_restrict": illust.get("x_restrict", 0)
+                                if isinstance(illust.get("x_restrict"), int)
+                                else 0,
+                                "tags": tags,
+                                "illust_id": int(target_id)
+                                if target_id.isdigit()
+                                else None,
+                            }
+                        )
+                        await self._save_cache_index()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "[pixivdirect] Failed to cache illust %s: %s",
+                            target_id,
+                            exc,
+                        )
                     return
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[pixivdirect] Preview download failed: %s", exc)
@@ -1324,13 +1863,7 @@ class PixivDirectPlugin(Star):
         yield event.plain_result("未知类型，请使用 i（作品）或 a（作者）。")
 
     async def _handle_random(self, event: AstrMessageEvent, args: list[str]):
-        user_token = self._get_user_token(event)
-        if not user_token:
-            await self._add_emoji_reaction(event, "error")
-            yield event.plain_result("请先登录：/pixiv login {refresh_token}")
-            return
-
-        # Check for share configuration command
+        # 1) share 配置命令（不需要 token）
         if len(args) >= 2 and args[1].lower() == "share":
             if len(args) >= 3:
                 value = args[2].lower()
@@ -1352,7 +1885,227 @@ class PixivDirectPlugin(Star):
                 yield event.plain_result(f"收藏分享功能当前状态：{status}")
                 return
 
-        # Check for @user parameter
+        # 1.5) dns 配置命令（仅管理员可修改）
+        if len(args) >= 2 and args[1].lower() == "dns":
+            if len(args) >= 3 and args[2].lower() == "refresh":
+                if not event.is_admin():
+                    yield event.plain_result("仅 AstrBot 管理员可手动刷新 DNS。")
+                    return
+                # Force DNS refresh by setting next refresh time to 0
+                self._dns_next_refresh_at = 0.0
+                yield event.plain_result(
+                    "已触发 DNS 刷新，将在下次 Pixiv API 请求时执行。"
+                )
+                return
+            else:
+                from datetime import datetime
+
+                next_refresh = datetime.fromtimestamp(self._dns_next_refresh_at)
+                yield event.plain_result(
+                    f"DNS 刷新状态：\n"
+                    f"- 下次刷新时间: {next_refresh.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"- 使用 /pixiv dns refresh 手动触发刷新"
+                )
+                return
+
+        # 2) r18 配置命令（不需要 token，仅管理员可修改）
+        if len(args) >= 2 and args[1].lower() == "r18":
+            if len(args) >= 3:
+                if not event.is_admin():
+                    yield event.plain_result("仅 AstrBot 管理员可修改 R-18 群聊设置。")
+                    return
+                value = args[2].lower()
+                if value in ("true", "1", "yes", "on"):
+                    self._r18_in_group = True
+                    await self._save_r18_config()
+                    yield event.plain_result("已开启群聊 R-18 内容显示。")
+                    return
+                elif value in ("false", "0", "no", "off"):
+                    self._r18_in_group = False
+                    await self._save_r18_config()
+                    yield event.plain_result("已关闭群聊 R-18 内容显示。")
+                    return
+                else:
+                    yield event.plain_result("无效的值，请使用 true 或 false。")
+                    return
+            else:
+                status = "开启" if self._r18_in_group else "关闭"
+                yield event.plain_result(f"群聊 R-18 内容显示当前状态：{status}")
+                return
+
+        # 2.3) unique 配置命令（仅管理员可修改）
+        if len(args) >= 2 and args[1].lower() == "unique":
+            if len(args) >= 3:
+                if not event.is_admin():
+                    yield event.plain_result("仅 AstrBot 管理员可修改唯一随机设置。")
+                    return
+                value = args[2].lower()
+                if value in ("true", "1", "yes", "on"):
+                    self._random_unique = True
+                    await self._save_unique_config()
+                    yield event.plain_result(
+                        "已开启唯一随机模式（图片发送后将从缓存池移除）。"
+                    )
+                    return
+                elif value in ("false", "0", "no", "off"):
+                    self._random_unique = False
+                    await self._save_unique_config()
+                    yield event.plain_result(
+                        "已关闭唯一随机模式（图片发送后保留在缓存池中）。"
+                    )
+                    return
+                else:
+                    yield event.plain_result("无效的值，请使用 true 或 false。")
+                    return
+            else:
+                status = "开启" if self._random_unique else "关闭"
+                yield event.plain_result(f"唯一随机模式当前状态：{status}")
+                return
+
+        # 2.4) groupblock 配置命令（仅管理员可修改）
+        if len(args) >= 2 and args[1].lower() == "groupblock":
+            group_id = event.get_group_id()
+            if not group_id:
+                yield event.plain_result("此命令仅可在群聊中使用。")
+                return
+
+            # Check if user is bot admin
+            if not event.is_admin():
+                yield event.plain_result("仅 AstrBot 管理员可修改群聊屏蔽标签。")
+                return
+
+            group_id_str = str(group_id)
+
+            if len(args) >= 4 and args[2].lower() == "add":
+                tag = args[3]
+                blocked_tags = self._group_blocked_tags.setdefault(group_id_str, [])
+                if tag not in blocked_tags:
+                    blocked_tags.append(tag)
+                    await self._save_group_blocked_tags()
+                    yield event.plain_result(f"已将标签「{tag}」添加到本群屏蔽列表。")
+                else:
+                    yield event.plain_result(f"标签「{tag}」已在本群屏蔽列表中。")
+                return
+            elif len(args) >= 4 and args[2].lower() == "remove":
+                tag = args[3]
+                blocked_tags = self._group_blocked_tags.get(group_id_str, [])
+                if tag in blocked_tags:
+                    blocked_tags.remove(tag)
+                    if not blocked_tags:
+                        self._group_blocked_tags.pop(group_id_str, None)
+                    await self._save_group_blocked_tags()
+                    yield event.plain_result(f"已将标签「{tag}」从本群屏蔽列表中移除。")
+                else:
+                    yield event.plain_result(f"标签「{tag}」不在本群屏蔽列表中。")
+                return
+            elif len(args) >= 3 and args[2].lower() == "list":
+                blocked_tags = self._group_blocked_tags.get(group_id_str, [])
+                if blocked_tags:
+                    tags_text = "、".join(blocked_tags)
+                    yield event.plain_result(f"本群屏蔽的标签：{tags_text}")
+                else:
+                    yield event.plain_result("本群没有设置屏蔽标签。")
+                return
+            elif len(args) >= 3 and args[2].lower() == "clear":
+                self._group_blocked_tags.pop(group_id_str, None)
+                await self._save_group_blocked_tags()
+                yield event.plain_result("已清空本群屏蔽标签列表。")
+                return
+            else:
+                yield event.plain_result(
+                    "用法：\n"
+                    "- /pixiv groupblock add tag=xxx  # 添加屏蔽标签\n"
+                    "- /pixiv groupblock remove tag=xxx  # 移除屏蔽标签\n"
+                    "- /pixiv groupblock list  # 查看屏蔽列表\n"
+                    "- /pixiv groupblock clear  # 清空屏蔽列表"
+                )
+                return
+
+        # 2.5) cache 配置命令（需要 token）
+        if len(args) >= 2 and args[1].lower() == "cache":
+            user_token = self._get_user_token(event)
+            if not user_token:
+                await self._add_emoji_reaction(event, "error")
+                yield event.plain_result("请先登录：/pixiv login {refresh_token}")
+                return
+
+            user_key = self._user_key(event)
+
+            if len(args) >= 3 and args[2].lower() == "add":
+                # Parse filter params from remaining args
+                cache_filter_tokens = args[3:]
+                cache_filter_params, cache_filter_summary = self._parse_random_filter(
+                    cache_filter_tokens
+                )
+
+                # Extract count parameter
+                count = 1
+                if "count" in cache_filter_params:
+                    count_raw = str(cache_filter_params.pop("count"))
+                    if count_raw.lower() == "always":
+                        count = "always"
+                    else:
+                        try:
+                            count = max(1, int(count_raw))
+                        except ValueError:
+                            count = 1
+
+                # Add to queue
+                user_queue = self._idle_cache_queue.setdefault(user_key, [])
+                user_queue.append(
+                    {
+                        "filter_params": cache_filter_params,
+                        "count": count,
+                        "remaining": count,
+                    }
+                )
+                await self._save_idle_cache_queue()
+
+                count_text = "始终" if count == "always" else f"{count}次"
+                yield event.plain_result(
+                    f"已添加闲时缓存任务：\n"
+                    f"- 筛选条件: {cache_filter_summary}\n"
+                    f"- 缓存次数: {count_text}\n"
+                    f"- 队列中任务数: {len(user_queue)}"
+                )
+                return
+            elif len(args) >= 3 and args[2].lower() == "list":
+                user_queue = self._idle_cache_queue.get(user_key, [])
+                if not user_queue:
+                    yield event.plain_result("当前没有待缓存的任务。")
+                    return
+
+                queue_text = "当前闲时缓存队列：\n"
+                for i, item in enumerate(user_queue, 1):
+                    fp = item.get("filter_params", {})
+                    remaining = item.get("remaining", 0)
+                    count = item.get("count", 1)
+                    _, summary = self._parse_random_filter(
+                        [f"{k}={v}" for k, v in fp.items()]
+                    )
+                    remain_text = (
+                        "始终"
+                        if remaining == "always"
+                        else f"剩余{remaining}次/{count}次"
+                    )
+                    queue_text += f"{i}. {summary} ({remain_text})\n"
+                yield event.plain_result(queue_text.strip())
+                return
+            elif len(args) >= 3 and args[2].lower() == "clear":
+                self._idle_cache_queue.pop(user_key, None)
+                await self._save_idle_cache_queue()
+                yield event.plain_result("已清空闲时缓存队列。")
+                return
+            else:
+                yield event.plain_result(
+                    "用法：\n"
+                    "- /pixiv random cache add tag=xxx count=N|always  # 添加缓存任务\n"
+                    "- /pixiv random cache list  # 查看队列\n"
+                    "- /pixiv random cache clear  # 清空队列"
+                )
+                return
+
+        # 3) 解析 @username 和筛选参数
         target_user_key = None
         target_user_name = None
         remaining_args = []
@@ -1375,36 +2128,78 @@ class PixivDirectPlugin(Star):
         filter_params, filter_summary = self._parse_random_filter(remaining_args)
         filter_params.setdefault("restrict", "public")
         filter_params.setdefault("max_pages", 3)
-
         cache_key = self._cache_key(filter_params)
 
-        # Use target user's cache if specified, otherwise use current user's
+        # 4) 如果是 @someone 模式，直接读取目标用户缓存（不需要当前用户 token）
         if target_user_key:
-            user_key = target_user_key
-            is_shared = True
-        else:
-            user_key = self._user_key(event)
-            is_shared = False
+            cached_item = await self._pop_cached_item(
+                target_user_key, cache_key, filter_params
+            )
+            if cached_item:
+                await self._add_emoji_reaction(event, "random")
+                caption = cached_item.get("caption") or "Pixiv 随机收藏（缓存）"
+                path = cached_item.get("path")
+                if path and self._should_send_image(event, cached_item):
+                    yield (
+                        event.make_result()
+                        .message(f"{caption}\n- 来源: 缓存（共享）")
+                        .file_image(path)
+                    )
+                else:
+                    yield event.plain_result(
+                        f"{caption}\n- 来源: 缓存（共享）\n⚠️ R-18 内容在群聊中仅显示信息"
+                        if self._is_r18_item(cached_item)
+                        else f"{caption}\n- 来源: 缓存（共享）"
+                    )
+                return
+            else:
+                hint = "该用户的缓存中没有找到符合条件的图片。"
+                if filter_params.get("tag") or filter_params.get("author"):
+                    hint += f"\n当前筛选: {filter_summary}"
+                    hint += "\n提示：可尝试其他筛选条件，如 tag=xxx author=xxx"
+                yield event.plain_result(hint)
+                return
 
-        cached_item = await self._pop_cached_item(user_key, cache_key)
+        # 5) 自身缓存模式（需要 token）
+        user_token = self._get_user_token(event)
+        if not user_token:
+            await self._add_emoji_reaction(event, "error")
+            yield event.plain_result("请先登录：/pixiv login {refresh_token}")
+            return
+
+        user_key = self._user_key(event)
+
+        # 尝试从缓存获取
+        cached_item = await self._pop_cached_item(user_key, cache_key, filter_params)
         if cached_item:
             await self._add_emoji_reaction(event, "random")
             caption = cached_item.get("caption") or "Pixiv 随机收藏（缓存）"
             path = cached_item.get("path")
-            if path:
-                source_info = "缓存（共享）" if is_shared else "缓存"
+            remain_total = len(
+                self._random_cache.get(user_key, {}).get(self._DEFAULT_POOL_KEY, [])
+            )
+            remain_matching = self._count_matching_items(user_key, filter_params)
+            if (
+                filter_params.get("tag")
+                or filter_params.get("author")
+                or filter_params.get("author_id")
+            ):
+                remain_text = f"{remain_total}张 (匹配当前筛选: {remain_matching}张)"
+            else:
+                remain_text = f"{remain_total}张 (全部)"
+            if path and self._should_send_image(event, cached_item):
                 yield (
                     event.make_result()
-                    .message(f"{caption}\n- 来源: {source_info}")
+                    .message(f"{caption}\n- 来源: 缓存\n- 剩余缓存: {remain_text}")
                     .file_image(path)
                 )
-                return
-
-        # If accessing shared cache and no cached item, don't fetch new items
-        if is_shared:
-            yield event.plain_result("该用户的缓存中没有找到符合条件的图片。")
+            else:
+                yield event.plain_result(
+                    f"{caption}\n- 来源: 缓存\n- 剩余缓存: {remain_text}\n⚠️ R-18 内容在群聊中仅显示信息"
+                )
             return
 
+        # 缓存为空，拉取新数据
         warmup = 2
         raw_warmup = filter_params.pop("warmup", None)
         if raw_warmup is not None:
@@ -1426,7 +2221,6 @@ class PixivDirectPlugin(Star):
 
         if error:
             await self._add_emoji_reaction(event, "error")
-            # Provide helpful hints for common "no match" errors
             error_msg = f"获取随机收藏失败：{error}"
             if "No bookmarked illust matched filters" in error:
                 tag_hint = filter_params.get("tag")
@@ -1443,25 +2237,37 @@ class PixivDirectPlugin(Star):
             yield event.plain_result(error_msg)
             return
 
-        picked = await self._pop_cached_item(user_key, cache_key)
+        picked = await self._pop_cached_item(user_key, cache_key, filter_params)
         if not picked:
             yield event.plain_result("未找到可发送的缓存图片。")
             return
 
         caption = picked.get("caption") or "Pixiv 随机收藏"
         path = picked.get("path")
-        remain = len(self._random_cache.get(user_key, {}).get(cache_key, []))
-        if path:
+        remain_total = len(
+            self._random_cache.get(user_key, {}).get(self._DEFAULT_POOL_KEY, [])
+        )
+        remain_matching = self._count_matching_items(user_key, filter_params)
+        if (
+            filter_params.get("tag")
+            or filter_params.get("author")
+            or filter_params.get("author_id")
+        ):
+            remain_text = f"{remain_total}张 (匹配当前筛选: {remain_matching}张)"
+        else:
+            remain_text = f"{remain_total}张 (全部)"
+        if path and self._should_send_image(event, picked):
             yield (
                 event.make_result()
                 .message(
-                    f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain}\n- 筛选条件: {filter_summary}",
+                    f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}",
                 )
                 .file_image(path)
             )
-            return
-
-        yield event.plain_result(caption)
+        else:
+            yield event.plain_result(
+                f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}\n⚠️ R-18 内容在群聊中仅显示信息"
+            )
 
     @filter.command_group("pixiv")
     def pixiv_group(self):
