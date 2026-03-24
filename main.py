@@ -22,7 +22,7 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 from .pixivSDK import pixiv
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.0.1")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.0.5")
 class PixivDirectPlugin(Star):
     # Emoji ID mapping for different stages (参考emojiReply)
     EMOJI_MAP = {
