@@ -2414,7 +2414,7 @@ class PixivDirectPlugin(Star):
             yield result
 
     @pixiv_group.command("random")
-    async def pixiv_random(self, event: AstrMessageEvent, filter_text: GreedyStr = ""):
+    async def pixiv_random(self, event: AstrMessageEvent, filter_text: GreedyStr):
         """Get a random bookmarked image with optional filters."""
         limited = await self._rate_limit_message(event)
         if limited:
