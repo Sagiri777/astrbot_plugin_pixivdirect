@@ -1962,6 +1962,7 @@ class PixivDirectPlugin(Star):
 
         yield event.plain_result("未知类型，请使用 i（作品）或 a（作者）。")
 
+    async def _handle_random(self, event: AstrMessageEvent, args: list[str]):
         # 1) share 配置命令（不需要 token）
         if len(args) >= 2 and args[1].lower() == "share":
             if len(args) >= 3:
