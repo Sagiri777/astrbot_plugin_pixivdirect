@@ -672,24 +672,56 @@ class CommandHandler:
                 return
 
         # Parse @username and filter params
+        # Detect QQ @mention via At component - if present, skip all @ tokens in text
+        from astrbot.api.message_components import At
+
         target_user_key = None
         target_user_name = None
         remaining_args = []
 
-        for token in args[1:]:
-            if token.startswith("@"):
-                target_user_name = token[1:]
-                target_user_key = self.find_user_by_name(target_user_name)
-                if not target_user_key:
-                    yield event.plain_result(f"❌ 未找到用户：{target_user_name}")
-                    return
+        # Check for At component first
+        at_component = None
+        for comp in event.get_messages():
+            if isinstance(comp, At) and comp.qq != "all":
+                at_component = comp
+                break
+
+        if at_component:
+            # Extract QQ number from At component
+            at_qq = str(at_component.qq)
+            platform = event.get_platform_id()
+            at_user_key = f"{platform}:{at_qq}"
+
+            # Check if this user exists in token_map
+            if at_user_key in self._config.token_map:
+                target_user_key = at_user_key
+                target_user_name = getattr(at_component, "name", None) or at_qq
+
+                # Check if user has enabled sharing
                 if not self._config.share_enabled.get(target_user_key, False):
                     yield event.plain_result(
                         f"❌ 用户 {target_user_name} 未开启收藏分享功能。"
                     )
                     return
             else:
-                remaining_args.append(token)
+                yield event.plain_result(f"❌ 未找到用户：{at_qq}")
+                return
+
+            # Skip @ tokens in text since we're using At component
+            for token in args[1:]:
+                if not token.startswith("@"):
+                    remaining_args.append(token)
+        else:
+            # No At component, process @ tokens as pixiv username lookup
+            for token in args[1:]:
+                if token.startswith("@"):
+                    target_user_name = token[1:]
+                    target_user_key = self.find_user_by_name(target_user_name)
+                    if not target_user_key:
+                        yield event.plain_result(f"❌ 未找到用户：{target_user_name}")
+                        return
+                else:
+                    remaining_args.append(token)
 
         filter_params, filter_summary = self._cache.parse_random_filter(
             remaining_args, self._max_random_pages
@@ -723,11 +755,59 @@ class CommandHandler:
                     yield event.plain_result(msg)
                 return
             else:
-                hint = "❌ 该用户的缓存中没有找到符合条件的图片。"
-                if filter_params.get("tag") or filter_params.get("author"):
-                    hint += f"\n当前筛选: {filter_summary}"
-                    hint += "\n💡 提示：可尝试其他筛选条件，如 tag=xxx author=xxx"
-                yield event.plain_result(hint)
+                # Cache empty, try to fetch new data using target user's token
+                target_user_token = self._config.token_map.get(target_user_key)
+                if not target_user_token:
+                    yield event.plain_result("❌ 该用户未登录 Pixiv。")
+                    return
+
+                warmup = 2
+                raw_warmup = filter_params.pop("warmup", None)
+                if raw_warmup is not None:
+                    try:
+                        warmup = max(1, min(MAX_RANDOM_WARMUP, int(str(raw_warmup))))
+                    except ValueError:
+                        warmup = 2
+
+                await self._emoji.add_emoji_reaction(event, "random")
+                latest_refresh_token, error = await self._enqueue_random_items(
+                    user_key=target_user_key,
+                    cache_key=cache_key,
+                    refresh_token=target_user_token,
+                    filter_params=filter_params.copy(),
+                    count=warmup,
+                )
+                if latest_refresh_token != target_user_token:
+                    self._config.token_map[target_user_key] = latest_refresh_token
+                    await self._config.save_tokens()
+
+                if error:
+                    await self._emoji.add_emoji_reaction(event, "error")
+                    yield event.plain_result(f"❌ 获取随机收藏失败：{error}")
+                    return
+
+                # Try to get item from cache again
+                cached_item = await self._cache.pop_cached_item(
+                    target_user_key, cache_key, filter_params
+                )
+                if not cached_item:
+                    yield event.plain_result("❌ 未找到可发送的缓存图片。")
+                    return
+
+                await self._emoji.add_emoji_reaction(event, "random")
+                caption = cached_item.get("caption") or "Pixiv 随机收藏（共享）"
+                path = cached_item.get("path")
+                if path and self.should_send_image(event, cached_item):
+                    yield (
+                        event.make_result()
+                        .message(f"{caption}\n- 来源: 新获取（共享）")
+                        .file_image(path)
+                    )
+                else:
+                    msg = f"{caption}\n- 来源: 新获取（共享）"
+                    if self._cache.is_r18_item(cached_item):
+                        msg += "\n⚠️ R-18 内容在群聊中仅显示信息"
+                    yield event.plain_result(msg)
                 return
 
         # Self cache mode - requires token

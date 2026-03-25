@@ -175,9 +175,32 @@ class PixivDirectPlugin(Star):
             try:
                 await self._idle_cache_user(uid, refresh_token)
             except Exception as exc:
-                logger.warning(
-                    "[pixivdirect] Idle cache failed for user %s: %s", uid, exc
+                # Check if it's a connection error and retry once after 5 seconds
+                is_connection_error = (
+                    isinstance(exc, (ConnectionError, OSError))
+                    or "Connection aborted" in str(exc)
+                    or "RemoteDisconnected" in str(exc)
                 )
+
+                if is_connection_error:
+                    logger.warning(
+                        "[pixivdirect] Idle cache connection error for user %s, retrying in 5 seconds: %s",
+                        uid,
+                        exc,
+                    )
+                    await asyncio.sleep(5)
+                    try:
+                        await self._idle_cache_user(uid, refresh_token)
+                    except Exception as retry_exc:
+                        logger.warning(
+                            "[pixivdirect] Idle cache retry failed for user %s: %s",
+                            uid,
+                            retry_exc,
+                        )
+                else:
+                    logger.warning(
+                        "[pixivdirect] Idle cache failed for user %s: %s", uid, exc
+                    )
 
     async def _idle_cache_user(self, uid: str, refresh_token: str) -> None:
         user_cache = self._config_manager.random_cache.get(uid, {})
