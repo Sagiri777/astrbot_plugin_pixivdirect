@@ -231,7 +231,20 @@ class PixivDirectPlugin(Star):
     @filter.command("pixiv")
     async def pixiv_command(self, event: AstrMessageEvent, args_str: str = ""):
         """Pixiv commands: help, login, id, random."""
-        logger.info(f"[pixivdirect] pixiv_command called with args_str: '{args_str}'")
+        # Get full command from event message_str instead of args_str
+        # because @filter.command may truncate arguments
+        full_message = event.message_str or ""
+        logger.info(
+            f"[pixivdirect] full_message: '{full_message}', args_str: '{args_str}'"
+        )
+
+        # Remove command prefix "/pixiv " or "pixiv "
+        command_match = re.match(r"^/?pixiv\s*(.*)", full_message, re.IGNORECASE)
+        if command_match:
+            remaining_args = command_match.group(1).strip()
+        else:
+            remaining_args = args_str
+
         limited = await self._command_handler.rate_limit_message(event)
         if limited:
             await self._emoji_handler.add_emoji_reaction(event, "rate_limit")
@@ -239,7 +252,7 @@ class PixivDirectPlugin(Star):
             return
 
         tokens = (
-            [t for t in re.split(r"\s+", args_str.strip()) if t] if args_str else []
+            [t for t in re.split(r"\s+", remaining_args) if t] if remaining_args else []
         )
         sub_cmd = tokens[0].lower() if tokens else "help"
         logger.info(f"[pixivdirect] tokens: {tokens}, sub_cmd: {sub_cmd}")
