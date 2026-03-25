@@ -119,7 +119,7 @@ class CommandHandler:
                             if item_tag.lower() == blocked_tag.lower():
                                 return False
 
-        if self._config.r18_in_group:
+        if self._config.is_r18_enabled_in_group(group_id):
             return True
         if self._cache.is_r18_item(item):
             return False
@@ -467,14 +467,15 @@ class CommandHandler:
                         "❌ 仅 AstrBot 管理员可修改 R-18 群聊设置。"
                     )
                     return
+                group_id = str(event.get_group_id())
                 value = args[2].lower()
                 if value in ("true", "1", "yes", "on"):
-                    self._config.r18_in_group = True
+                    self._config.r18_in_group[group_id] = True
                     await self._config.save_r18_config()
                     yield event.plain_result("✅ 已开启群聊 R-18 内容显示。")
                     return
                 elif value in ("false", "0", "no", "off"):
-                    self._config.r18_in_group = False
+                    self._config.r18_in_group[group_id] = False
                     await self._config.save_r18_config()
                     yield event.plain_result("✅ 已关闭群聊 R-18 内容显示。")
                     return
@@ -482,26 +483,30 @@ class CommandHandler:
                     yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
                     return
             else:
-                status = "开启" if self._config.r18_in_group else "关闭"
+                group_id = str(event.get_group_id())
+                status = (
+                    "开启" if self._config.is_r18_enabled_in_group(group_id) else "关闭"
+                )
                 yield event.plain_result(f"ℹ️ 群聊 R-18 内容显示当前状态：{status}")
                 return
 
         # Handle unique config
         if len(args) >= 2 and args[1].lower() == "unique":
+            user_id = user_key(event)
             if len(args) >= 3:
                 if not event.is_admin():
                     yield event.plain_result("❌ 仅 AstrBot 管理员可修改唯一随机设置。")
                     return
                 value = args[2].lower()
                 if value in ("true", "1", "yes", "on"):
-                    self._config.random_unique = True
+                    self._config.random_unique[user_id] = "true"
                     await self._config.save_unique_config()
                     yield event.plain_result(
                         "✅ 已开启唯一随机模式（图片发送后将从缓存池移除）。"
                     )
                     return
                 elif value in ("false", "0", "no", "off"):
-                    self._config.random_unique = False
+                    self._config.random_unique[user_id] = "false"
                     await self._config.save_unique_config()
                     yield event.plain_result(
                         "✅ 已关闭唯一随机模式（图片发送后保留在缓存池中）。"
@@ -511,7 +516,11 @@ class CommandHandler:
                     yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
                     return
             else:
-                status = "开启" if self._config.random_unique else "关闭"
+                status = (
+                    "开启"
+                    if self._config.is_unique_enabled_for_user(user_id)
+                    else "关闭"
+                )
                 yield event.plain_result(f"ℹ️ 唯一随机模式当前状态：{status}")
                 return
 

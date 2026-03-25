@@ -28,8 +28,8 @@ class ConfigManager:
         self._cache_lock = asyncio.Lock()
         self._token_map: dict[str, str] = {}
         self._share_enabled: dict[str, bool] = {}
-        self._r18_in_group: bool = False
-        self._random_unique: bool = False
+        self._r18_in_group: dict[str, bool] = {}
+        self._random_unique: dict[str, str] = {}
         self._idle_cache_queue: dict[str, list[dict[str, Any]]] = {}
         self._group_blocked_tags: dict[str, list[str]] = {}
         self._random_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
@@ -51,19 +51,19 @@ class ConfigManager:
         return self._share_enabled
 
     @property
-    def r18_in_group(self) -> bool:
+    def r18_in_group(self) -> dict[str, bool]:
         return self._r18_in_group
 
     @r18_in_group.setter
-    def r18_in_group(self, value: bool) -> None:
+    def r18_in_group(self, value: dict[str, bool]) -> None:
         self._r18_in_group = value
 
     @property
-    def random_unique(self) -> bool:
+    def random_unique(self) -> dict[str, str]:
         return self._random_unique
 
     @random_unique.setter
-    def random_unique(self, value: bool) -> None:
+    def random_unique(self, value: dict[str, str]) -> None:
         self._random_unique = value
 
     @property
@@ -73,6 +73,12 @@ class ConfigManager:
     @property
     def group_blocked_tags(self) -> dict[str, list[str]]:
         return self._group_blocked_tags
+
+    def is_r18_enabled_in_group(self, group_id: str) -> bool:
+        return self._r18_in_group.get(group_id, False)
+
+    def is_unique_enabled_for_user(self, user_id: str) -> bool:
+        return self._random_unique.get(user_id, "false") == "true"
 
     @property
     def random_cache(self) -> dict[str, dict[str, list[dict[str, Any]]]]:
@@ -237,14 +243,10 @@ class ConfigManager:
 
     def _load_r18_config(self) -> None:
         if not self._r18_config_file.exists():
-            self._r18_in_group = False
+            self._r18_in_group = {}
             try:
                 self._r18_config_file.parent.mkdir(parents=True, exist_ok=True)
-                self._r18_config_file.write_text(
-                    json.dumps({"r18_in_group": False}, ensure_ascii=False, indent=2)
-                    + "\n",
-                    encoding="utf-8",
-                )
+                self._r18_config_file.write_text("{}", encoding="utf-8")
             except Exception as exc:
                 logger.warning(
                     "[pixivdirect] Failed to create default r18 config: %s", exc
@@ -254,15 +256,17 @@ class ConfigManager:
             raw = json.loads(self._r18_config_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning(
-                "[pixivdirect] Failed to load r18 config, using default (disabled)."
+                "[pixivdirect] Failed to load r18 config, using default (empty)."
             )
-            self._r18_in_group = False
+            self._r18_in_group = {}
             return
 
+        loaded: dict[str, bool] = {}
         if isinstance(raw, dict):
-            self._r18_in_group = bool(raw.get("r18_in_group", False))
-        else:
-            self._r18_in_group = False
+            for key, value in raw.items():
+                if isinstance(key, str) and key:
+                    loaded[key] = bool(value)
+        self._r18_in_group = loaded
 
     def _load_idle_cache_queue(self) -> None:
         if not self._idle_cache_queue_file.exists():
@@ -312,14 +316,10 @@ class ConfigManager:
 
     def _load_unique_config(self) -> None:
         if not self._unique_config_file.exists():
-            self._random_unique = False
+            self._random_unique = {}
             try:
                 self._unique_config_file.parent.mkdir(parents=True, exist_ok=True)
-                self._unique_config_file.write_text(
-                    json.dumps({"random_unique": False}, ensure_ascii=False, indent=2)
-                    + "\n",
-                    encoding="utf-8",
-                )
+                self._unique_config_file.write_text("{}", encoding="utf-8")
             except Exception as exc:
                 logger.warning(
                     "[pixivdirect] Failed to create default unique config: %s", exc
@@ -329,15 +329,17 @@ class ConfigManager:
             raw = json.loads(self._unique_config_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             logger.warning(
-                "[pixivdirect] Failed to load unique config, using default (disabled)."
+                "[pixivdirect] Failed to load unique config, using default (empty)."
             )
-            self._random_unique = False
+            self._random_unique = {}
             return
 
+        loaded: dict[str, str] = {}
         if isinstance(raw, dict):
-            self._random_unique = bool(raw.get("random_unique", False))
-        else:
-            self._random_unique = False
+            for key, value in raw.items():
+                if isinstance(key, str) and key:
+                    loaded[key] = str(value)
+        self._random_unique = loaded
 
     def _load_group_blocked_tags(self) -> None:
         if not self._group_blocked_tags_file.exists():
@@ -391,7 +393,7 @@ class ConfigManager:
             try:
                 self._r18_config_file.write_text(
                     json.dumps(
-                        {"r18_in_group": self._r18_in_group},
+                        self._r18_in_group,
                         ensure_ascii=False,
                         indent=2,
                     )
@@ -417,7 +419,7 @@ class ConfigManager:
             try:
                 self._unique_config_file.write_text(
                     json.dumps(
-                        {"random_unique": self._random_unique},
+                        self._random_unique,
                         ensure_ascii=False,
                         indent=2,
                     )

@@ -45,11 +45,12 @@ class CacheManager:
             if not user_cache:
                 return None
 
+            unique_enabled = self._config.is_unique_enabled_for_user(user_key)
             # Try unified pool first if filter_params provided
             if filter_params:
                 pool = user_cache.get(DEFAULT_POOL_KEY)
                 if pool:
-                    if self._config.random_unique:
+                    if unique_enabled:
                         # Original behavior: return first matching item and remove it
                         for i, item in enumerate(pool):
                             path = item.get("path")
@@ -77,7 +78,7 @@ class CacheManager:
             # Fallback: try exact cache_key match (legacy or no-filter)
             queue = user_cache.get(cache_key)
             if queue:
-                if self._config.random_unique:
+                if unique_enabled:
                     # Original behavior: pop from front
                     while queue:
                         item = queue.pop(0)
