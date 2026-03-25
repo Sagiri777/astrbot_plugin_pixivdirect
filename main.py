@@ -231,6 +231,7 @@ class PixivDirectPlugin(Star):
     @filter.command("pixiv")
     async def pixiv_command(self, event: AstrMessageEvent, args_str: str = ""):
         """Pixiv commands: help, login, id, random."""
+        logger.info(f"[pixivdirect] pixiv_command called with args_str: '{args_str}'")
         limited = await self._command_handler.rate_limit_message(event)
         if limited:
             await self._emoji_handler.add_emoji_reaction(event, "rate_limit")
@@ -241,6 +242,7 @@ class PixivDirectPlugin(Star):
             [t for t in re.split(r"\s+", args_str.strip()) if t] if args_str else []
         )
         sub_cmd = tokens[0].lower() if tokens else "help"
+        logger.info(f"[pixivdirect] tokens: {tokens}, sub_cmd: {sub_cmd}")
 
         if sub_cmd == "help":
             await self._emoji_handler.add_emoji_reaction(event, "help")

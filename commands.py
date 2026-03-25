@@ -417,8 +417,10 @@ class CommandHandler:
 
     async def handle_random(self, event: AstrMessageEvent, args: list[str]):
         """Handle random bookmark command."""
+        logger.info(f"[pixivdirect] handle_random called with args: {args}")
         # Handle share config
         if len(args) >= 2 and args[1].lower() == "share":
+            logger.info("[pixivdirect] Processing share command")
             key = user_key(event)
             if len(args) >= 3:
                 value = args[2].lower()
@@ -686,6 +688,9 @@ class CommandHandler:
         filter_params.setdefault("restrict", "public")
         filter_params.setdefault("max_pages", 3)
         cache_key = self._cache.cache_key(filter_params)
+        logger.info(
+            f"[pixivdirect] Continuing with random bookmark, filter_params: {filter_params}"
+        )
 
         # @someone mode - read from target user cache
         if target_user_key:
