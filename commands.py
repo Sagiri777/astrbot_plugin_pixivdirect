@@ -662,12 +662,52 @@ class CommandHandler:
                 await self._config.save_idle_cache_queue()
                 yield event.plain_result("✅ 已清空闲时缓存队列。")
                 return
+            elif len(args) >= 3 and args[2].lower() == "now":
+                # /pixiv random cache now N
+                count = 1
+                if len(args) >= 4:
+                    try:
+                        count = max(1, int(args[3]))
+                    except ValueError:
+                        count = 1
+
+                yield event.plain_result(f"⏳ 正在即时缓存 {count} 张图片...")
+
+                latest_refresh_token, error = await self._enqueue_random_items(
+                    user_key=key,
+                    cache_key=DEFAULT_POOL_KEY,
+                    refresh_token=user_token,
+                    filter_params={"restrict": "public", "max_pages": 3},
+                    count=count,
+                )
+
+                if error:
+                    await self._emoji.add_emoji_reaction(event, "error")
+                    yield event.plain_result(f"❌ 即时缓存失败：{error}")
+                else:
+                    # 统计成功和失败的数量
+                    user_cache = self._config.random_cache.get(key, {})
+                    queue = user_cache.get(DEFAULT_POOL_KEY, [])
+                    # 新添加的项在队列末尾
+                    success_count = min(count, len(queue))
+                    fail_count = count - success_count
+
+                    if fail_count > 0:
+                        yield event.plain_result(
+                            f"✅ 即时缓存完成：已完成 {success_count} 张，有 {fail_count} 张失败"
+                        )
+                    else:
+                        yield event.plain_result(
+                            f"✅ 即时缓存 {success_count} 张已完成"
+                        )
+                return
             else:
                 yield event.plain_result(
                     "📋 用法：\n"
                     "- /pixiv random cache add tag=xxx count=N|always  # 添加缓存任务\n"
                     "- /pixiv random cache list  # 查看队列\n"
-                    "- /pixiv random cache clear  # 清空队列"
+                    "- /pixiv random cache clear  # 清空队列\n"
+                    "- /pixiv random cache now N  # 立即缓存N张"
                 )
                 return
 
