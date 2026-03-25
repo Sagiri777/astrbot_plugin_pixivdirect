@@ -673,25 +673,57 @@ class CommandHandler:
 
                 yield event.plain_result(f"⏳ 正在即时缓存 {count} 张图片...")
 
-                latest_refresh_token, error = await self._enqueue_random_items(
-                    user_key=key,
-                    cache_key=DEFAULT_POOL_KEY,
-                    refresh_token=user_token,
-                    filter_params={"restrict": "public", "max_pages": 3},
-                    count=count,
-                )
+                max_retries = 4
+                retry_delay = 5
+                last_error = None
+                success_count = 0
+                fail_count = 0
 
-                if error:
+                for attempt in range(max_retries + 1):
+                    try:
+                        latest_refresh_token, error = await self._enqueue_random_items(
+                            user_key=key,
+                            cache_key=DEFAULT_POOL_KEY,
+                            refresh_token=user_token,
+                            filter_params={"restrict": "public", "max_pages": 3},
+                            count=count,
+                        )
+
+                        if error:
+                            last_error = error
+                            # 非连接错误，不重试
+                            break
+
+                        # 统计成功和失败的数量
+                        user_cache = self._config.random_cache.get(key, {})
+                        queue = user_cache.get(DEFAULT_POOL_KEY, [])
+                        success_count = min(count, len(queue))
+                        fail_count = count - success_count
+                        last_error = None
+                        break
+
+                    except (ConnectionError, OSError) as exc:
+                        last_error = str(exc)
+                        is_connection_error = (
+                            "Connection aborted" in str(exc)
+                            or "RemoteDisconnected" in str(exc)
+                            or isinstance(exc, (ConnectionError, OSError))
+                        )
+                        if is_connection_error and attempt < max_retries:
+                            logger.warning(
+                                "[pixivdirect] Cache now connection error (attempt %d/%d): %s",
+                                attempt + 1,
+                                max_retries + 1,
+                                exc,
+                            )
+                            await asyncio.sleep(retry_delay)
+                        else:
+                            break
+
+                if last_error:
                     await self._emoji.add_emoji_reaction(event, "error")
-                    yield event.plain_result(f"❌ 即时缓存失败：{error}")
+                    yield event.plain_result(f"❌ 即时缓存失败：{last_error}")
                 else:
-                    # 统计成功和失败的数量
-                    user_cache = self._config.random_cache.get(key, {})
-                    queue = user_cache.get(DEFAULT_POOL_KEY, [])
-                    # 新添加的项在队列末尾
-                    success_count = min(count, len(queue))
-                    fail_count = count - success_count
-
                     if fail_count > 0:
                         yield event.plain_result(
                             f"✅ 即时缓存完成：已完成 {success_count} 张，有 {fail_count} 张失败"
