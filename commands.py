@@ -12,6 +12,11 @@ from .config_manager import ConfigManager
 from .constants import (
     DEFAULT_POOL_KEY,
     MAX_RANDOM_WARMUP,
+    SEARCH_DEFAULT_LIMIT,
+    SEARCH_DURATION_OPTIONS,
+    SEARCH_MAX_LIMIT,
+    SEARCH_SORT_OPTIONS,
+    SEARCH_TARGET_OPTIONS,
 )
 from .emoji_reaction import EmojiReactionHandler
 from .image_handler import ImageHandler
@@ -19,6 +24,8 @@ from .utils import (
     format_author_detail,
     format_illust_detail,
     format_random_bookmark,
+    format_search_result,
+    format_search_user_result,
     user_key,
 )
 
@@ -1381,3 +1388,230 @@ class CommandHandler:
 
         await self._config.save_cache_index()
         return latest_refresh_token, None
+
+    def _parse_search_options(self, args: list[str]) -> dict[str, Any]:
+        """Parse search options from command arguments."""
+        options: dict[str, Any] = {}
+        for arg in args:
+            if "=" in arg:
+                key, value = arg.split("=", 1)
+                key = key.lower().strip()
+                value = value.strip()
+                if key == "sort":
+                    if value in SEARCH_SORT_OPTIONS:
+                        options["sort"] = value
+                elif key == "target":
+                    if value in SEARCH_TARGET_OPTIONS:
+                        options["search_target"] = value
+                elif key == "duration":
+                    if value in SEARCH_DURATION_OPTIONS:
+                        options["duration"] = value
+                elif key == "translate":
+                    options["include_translated_tag_results"] = value.lower() in (
+                        "true",
+                        "1",
+                        "yes",
+                    )
+                elif key == "page":
+                    try:
+                        page = int(value)
+                        if page > 0:
+                            options["page"] = page
+                    except ValueError:
+                        pass
+                elif key == "limit":
+                    try:
+                        limit = int(value)
+                        if 0 < limit <= SEARCH_MAX_LIMIT:
+                            options["limit"] = limit
+                    except ValueError:
+                        pass
+        return options
+
+    async def handle_search(self, event: AstrMessageEvent, args: list[str]):
+        """Handle search command for illustrations."""
+        if len(args) < 2:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result("❌ 用法：/pixiv search {关键词} [选项]")
+            return
+
+        user_token = self.get_user_token(event)
+        if not user_token:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result("❌ 请先登录：/pixiv login {refresh_token}")
+            return
+
+        keyword = args[1].strip()
+        if not keyword:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result("❌ 搜索关键词不能为空。")
+            return
+
+        # Parse options
+        options = self._parse_search_options(args[2:])
+        page = options.get("page", 1)
+        limit = options.get("limit", SEARCH_DEFAULT_LIMIT)
+
+        # Build search params
+        search_params: dict[str, Any] = {
+            "word": keyword,
+            "search_target": options.get("search_target", "partial_match_for_tags"),
+            "sort": options.get("sort", "date_desc"),
+            "include_translated_tag_results": options.get(
+                "include_translated_tag_results", True
+            ),
+        }
+        if "duration" in options:
+            search_params["duration"] = options["duration"]
+
+        # Calculate offset from page
+        if page > 1:
+            search_params["offset"] = (page - 1) * 30  # Pixiv API returns 30 per page
+
+        await self._emoji.add_emoji_reaction(event, "search")
+
+        try:
+            result = await self._pixiv_call(
+                "search_illust",
+                search_params,
+                refresh_token=user_token,
+            )
+        except Exception as exc:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result(f"❌ 搜索失败：{exc}")
+            return
+
+        if not result.get("ok"):
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result(self._image.format_pixiv_error(result))
+            return
+
+        latest_refresh_token = str(result.get("refresh_token") or user_token)
+        if latest_refresh_token != user_token:
+            await self.set_user_token(event, latest_refresh_token)
+
+        data = result.get("data")
+        if not isinstance(data, dict):
+            yield event.plain_result("❌ 解析搜索结果失败。")
+            return
+
+        illusts = data.get("illusts") if isinstance(data.get("illusts"), list) else []
+        total_count = None  # Pixiv API doesn't return total count in search
+
+        # Limit results
+        illusts = illusts[:limit]
+
+        if not illusts:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result(
+                f"🔍 搜索结果：关键词「{keyword}」没有找到相关作品。"
+            )
+            return
+
+        # Format and send results
+        caption = format_search_result(illusts, keyword, page, total_count)
+
+        # Download first image as preview (if R-18 filtering allows)
+        first_illust = illusts[0]
+        first_illust_id = first_illust.get("id")
+        if self.should_send_image(event, first_illust):
+            try:
+                from .pixivSDK import _pick_illust_image_url
+
+                image_url = _pick_illust_image_url(first_illust)
+                if image_url:
+                    local_path = await self._image.download_image_to_cache(
+                        image_url,
+                        access_token=result.get("access_token"),
+                        refresh_token=latest_refresh_token,
+                        name_prefix=f"search_{keyword}_{first_illust_id}",
+                    )
+                    yield (event.make_result().message(caption).file_image(local_path))
+                    return
+            except Exception as exc:
+                logger.warning("[pixivdirect] Search preview download failed: %s", exc)
+
+        # Fallback to text only
+        yield event.plain_result(caption)
+
+    async def handle_search_user(self, event: AstrMessageEvent, args: list[str]):
+        """Handle searchuser command for authors."""
+        if len(args) < 2:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result("❌ 用法：/pixiv searchuser {关键词} [选项]")
+            return
+
+        user_token = self.get_user_token(event)
+        if not user_token:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result("❌ 请先登录：/pixiv login {refresh_token}")
+            return
+
+        keyword = args[1].strip()
+        if not keyword:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result("❌ 搜索关键词不能为空。")
+            return
+
+        # Parse options (only page and limit for user search)
+        options = self._parse_search_options(args[2:])
+        page = options.get("page", 1)
+        limit = options.get("limit", SEARCH_DEFAULT_LIMIT)
+
+        # Build search params
+        search_params: dict[str, Any] = {
+            "word": keyword,
+            "sort": options.get("sort", "date_desc"),
+        }
+
+        # Calculate offset from page
+        if page > 1:
+            search_params["offset"] = (page - 1) * 30  # Pixiv API returns 30 per page
+
+        await self._emoji.add_emoji_reaction(event, "search")
+
+        try:
+            result = await self._pixiv_call(
+                "search_user",
+                search_params,
+                refresh_token=user_token,
+            )
+        except Exception as exc:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result(f"❌ 搜索失败：{exc}")
+            return
+
+        if not result.get("ok"):
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result(self._image.format_pixiv_error(result))
+            return
+
+        latest_refresh_token = str(result.get("refresh_token") or user_token)
+        if latest_refresh_token != user_token:
+            await self.set_user_token(event, latest_refresh_token)
+
+        data = result.get("data")
+        if not isinstance(data, dict):
+            yield event.plain_result("❌ 解析搜索结果失败。")
+            return
+
+        user_previews = (
+            data.get("user_previews")
+            if isinstance(data.get("user_previews"), list)
+            else []
+        )
+        total_count = None  # Pixiv API doesn't return total count in search
+
+        # Limit results
+        user_previews = user_previews[:limit]
+
+        if not user_previews:
+            await self._emoji.add_emoji_reaction(event, "error")
+            yield event.plain_result(
+                f"🔍 搜索作者结果：关键词「{keyword}」没有找到相关作者。"
+            )
+            return
+
+        # Format and send results
+        caption = format_search_user_result(user_previews, keyword, page, total_count)
+        yield event.plain_result(caption)

@@ -28,7 +28,7 @@ from .pixivSDK import pixiv
 from .utils import help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.6.0")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.7.0")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -320,6 +320,21 @@ class PixivDirectPlugin(Star):
         elif sub_cmd == "random":
             async for result in self._command_handler.handle_random(
                 event, ["random", *tokens[1:]]
+            ):
+                yield result
+        elif sub_cmd == "dns":
+            async for result in self._command_handler.handle_random(
+                event, ["random", "dns", *tokens[1:]]
+            ):
+                yield result
+        elif sub_cmd == "search":
+            async for result in self._command_handler.handle_search(
+                event, ["search", *tokens[1:]]
+            ):
+                yield result
+        elif sub_cmd == "searchuser":
+            async for result in self._command_handler.handle_search_user(
+                event, ["searchuser", *tokens[1:]]
             ):
                 yield result
         else:

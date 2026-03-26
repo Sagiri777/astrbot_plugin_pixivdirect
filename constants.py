@@ -163,17 +163,6 @@ EMOJI_MAP: dict[str, int] = {
     "瞪眼": 128563,
 }
 
-# Stage-specific emoji names
-STAGE_EMOJIS: dict[str, list[str]] = {
-    "login": ["赞", "OK"],  # 登录阶段
-    "query_illust": ["期待", "比心"],  # 查询作品阶段
-    "query_artist": ["崇拜", "爱心"],  # 查询作者阶段
-    "random": ["惊喜", "庆祝"],  # 随机收藏阶段
-    "error": ["尴尬", "流汗"],  # 错误阶段
-    "rate_limit": ["困", "哈欠"],  # 限频阶段
-    "help": ["吃瓜", "暗中观察"],  # 帮助阶段
-}
-
 # Plugin configuration constants
 DNS_REFRESH_INTERVAL_SECONDS: float = 24 * 60 * 60
 DNS_REFRESH_RETRY_SECONDS: float = 60
@@ -193,6 +182,42 @@ DEFAULT_SCAN_PAGES: int = 3  # Default pages to scan
 # Multi-image settings
 MULTI_IMAGE_THRESHOLD: int = 3  # Threshold for using forward messages
 MAX_IMAGES_PER_ILLUST: int = 20  # Max images to download per illust
+
+# Search settings
+SEARCH_DEFAULT_LIMIT: int = 10
+SEARCH_MAX_LIMIT: int = 30
+SEARCH_SORT_OPTIONS: list[str] = [
+    "date_desc",
+    "date_asc",
+    "popular_desc",
+    "popular_male_desc",
+    "popular_female_desc",
+]
+SEARCH_TARGET_OPTIONS: list[str] = [
+    "partial_match_for_tags",
+    "exact_match_for_tags",
+    "title_and_caption",
+]
+SEARCH_DURATION_OPTIONS: list[str] = [
+    "within_last_day",
+    "within_last_week",
+    "within_last_month",
+]
+SEARCH_USER_SORT_OPTIONS: list[str] = [
+    "date_desc",
+]
+
+# Stage-specific emoji names
+STAGE_EMOJIS: dict[str, list[str]] = {
+    "login": ["赞", "OK"],  # 登录阶段
+    "query_illust": ["期待", "比心"],  # 查询作品阶段
+    "query_artist": ["崇拜", "爱心"],  # 查询作者阶段
+    "random": ["惊喜", "庆祝"],  # 随机收藏阶段
+    "search": ["期待", "暗中观察"],  # 搜索阶段
+    "error": ["尴尬", "流汗"],  # 错误阶段
+    "rate_limit": ["困", "哈欠"],  # 限频阶段
+    "help": ["吃瓜", "暗中观察"],  # 帮助阶段
+}
 
 # Configurable constants (can be modified via commands)
 CONFIGURABLE_CONSTANTS: dict[str, Any] = {
