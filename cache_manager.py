@@ -32,6 +32,7 @@ class CacheManager:
         user_key: str,
         cache_key: str,
         filter_params: dict[str, Any] | None = None,
+        exclude_sent: bool = False,
     ) -> dict[str, Any] | None:
         """Pop a cached item matching the filter criteria from the user's pool.
 
@@ -39,6 +40,7 @@ class CacheManager:
         Otherwise falls back to exact cache_key lookup (legacy behavior).
         When random_unique is False, returns a random item without removing from pool.
         When random_unique is True, removes and returns the first matching item.
+        When exclude_sent is True, excludes already sent illust IDs.
         """
         async with self._config._cache_lock:
             user_cache = self._config.random_cache.get(user_key)
@@ -46,6 +48,10 @@ class CacheManager:
                 return None
 
             unique_enabled = self._config.is_unique_enabled_for_user(user_key)
+            sent_ids = (
+                self._config.get_sent_ids_for_user(user_key) if exclude_sent else set()
+            )
+
             # Try unified pool first if filter_params provided
             if filter_params:
                 pool = user_cache.get(DEFAULT_POOL_KEY)
@@ -58,6 +64,14 @@ class CacheManager:
                                 isinstance(path, str) and path and Path(path).exists()
                             ):
                                 continue
+                            # Skip already sent items
+                            illust_id = item.get("illust_id")
+                            if (
+                                exclude_sent
+                                and isinstance(illust_id, int)
+                                and illust_id in sent_ids
+                            ):
+                                continue
                             if self._item_matches_filter(item, filter_params):
                                 pool.pop(i)
                                 return item
@@ -68,6 +82,14 @@ class CacheManager:
                             path = item.get("path")
                             if not (
                                 isinstance(path, str) and path and Path(path).exists()
+                            ):
+                                continue
+                            # Skip already sent items
+                            illust_id = item.get("illust_id")
+                            if (
+                                exclude_sent
+                                and isinstance(illust_id, int)
+                                and illust_id in sent_ids
                             ):
                                 continue
                             if self._item_matches_filter(item, filter_params):
@@ -84,6 +106,14 @@ class CacheManager:
                         item = queue.pop(0)
                         path = item.get("path")
                         if isinstance(path, str) and path and Path(path).exists():
+                            # Skip already sent items
+                            illust_id = item.get("illust_id")
+                            if (
+                                exclude_sent
+                                and isinstance(illust_id, int)
+                                and illust_id in sent_ids
+                            ):
+                                continue
                             return item
                 else:
                     # Random selection from queue
@@ -93,6 +123,11 @@ class CacheManager:
                         if isinstance(item.get("path"), str)
                         and item.get("path")
                         and Path(item.get("path")).exists()
+                        and not (
+                            exclude_sent
+                            and isinstance(item.get("illust_id"), int)
+                            and item.get("illust_id") in sent_ids
+                        )
                     ]
                     if valid_items:
                         return random.choice(valid_items)

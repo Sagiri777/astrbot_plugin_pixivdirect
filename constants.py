@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 # Emoji ID mapping for different stages (参考emojiReply)
 EMOJI_MAP: dict[str, int] = {
     # Type 1 表情
@@ -183,3 +185,22 @@ IDLE_CACHE_INTERVAL_SECONDS: float = 900  # 15 minutes between idle cache runs
 IDLE_CACHE_COUNT: int = 5  # Number of items to cache per user during idle
 DEFAULT_CACHE_SIZE: int = 10  # Default minimum cache size to maintain
 DEFAULT_POOL_KEY: str = "__all__"  # Unified cache pool key per user
+
+# Unique mode scan settings
+MAX_UNIQUE_SCAN_PAGES: int = 9  # Max pages to scan in unique mode (3+3+3)
+DEFAULT_SCAN_PAGES: int = 3  # Default pages to scan
+
+# Multi-image settings
+MULTI_IMAGE_THRESHOLD: int = 3  # Threshold for using forward messages
+MAX_IMAGES_PER_ILLUST: int = 20  # Max images to download per illust
+
+# Configurable constants (can be modified via commands)
+CONFIGURABLE_CONSTANTS: dict[str, Any] = {
+    "idle_cache_interval": IDLE_CACHE_INTERVAL_SECONDS,
+    "idle_cache_count": IDLE_CACHE_COUNT,
+    "default_cache_size": DEFAULT_CACHE_SIZE,
+    "max_random_pages": MAX_RANDOM_PAGES,
+    "min_command_interval": MIN_COMMAND_INTERVAL_SECONDS,
+    "max_unique_scan_pages": MAX_UNIQUE_SCAN_PAGES,
+    "multi_image_threshold": MULTI_IMAGE_THRESHOLD,
+}

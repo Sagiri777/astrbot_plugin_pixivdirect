@@ -22,6 +22,9 @@ class ConfigManager:
         self._idle_cache_queue_file = plugin_data_dir / "idle_cache_queue.json"
         self._unique_config_file = plugin_data_dir / "unique_config.json"
         self._group_blocked_tags_file = plugin_data_dir / "group_blocked_tags.json"
+        self._sent_illust_ids_file = plugin_data_dir / "sent_illust_ids.json"
+        self._image_quality_file = plugin_data_dir / "image_quality_config.json"
+        self._custom_constants_file = plugin_data_dir / "custom_constants.json"
 
         # Configuration state
         self._storage_lock = asyncio.Lock()
@@ -33,6 +36,9 @@ class ConfigManager:
         self._idle_cache_queue: dict[str, list[dict[str, Any]]] = {}
         self._group_blocked_tags: dict[str, list[str]] = {}
         self._random_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
+        self._sent_illust_ids: dict[str, set[int]] = {}
+        self._image_quality_config: dict[str, str] = {}
+        self._custom_constants: dict[str, Any] = {}
 
     @property
     def cache_dir(self) -> Path:
@@ -81,6 +87,32 @@ class ConfigManager:
         return self._random_unique.get(user_id, "false") == "true"
 
     @property
+    def sent_illust_ids(self) -> dict[str, set[int]]:
+        return self._sent_illust_ids
+
+    @property
+    def image_quality_config(self) -> dict[str, str]:
+        return self._image_quality_config
+
+    @property
+    def custom_constants(self) -> dict[str, Any]:
+        return self._custom_constants
+
+    def get_image_quality(self, entity_key: str) -> str:
+        """Get image quality setting for an entity (user or group)."""
+        return self._image_quality_config.get(entity_key, "original")
+
+    def get_sent_ids_for_user(self, user_key: str) -> set[int]:
+        """Get sent illust IDs for a user."""
+        return self._sent_illust_ids.get(user_key, set())
+
+    def add_sent_id_for_user(self, user_key: str, illust_id: int) -> None:
+        """Add an illust ID to the sent set for a user."""
+        if user_key not in self._sent_illust_ids:
+            self._sent_illust_ids[user_key] = set()
+        self._sent_illust_ids[user_key].add(illust_id)
+
+    @property
     def random_cache(self) -> dict[str, dict[str, list[dict[str, Any]]]]:
         return self._random_cache
 
@@ -102,6 +134,9 @@ class ConfigManager:
         self._load_idle_cache_queue()
         self._load_unique_config()
         self._load_group_blocked_tags()
+        self._load_sent_illust_ids()
+        self._load_image_quality_config()
+        self._load_custom_constants()
 
     def _load_tokens(self) -> None:
         if not self._token_file.exists():
@@ -461,3 +496,128 @@ class ConfigManager:
                 encoding="utf-8",
             )
             tmp_file.replace(self._token_file)
+
+    def _load_sent_illust_ids(self) -> None:
+        if not self._sent_illust_ids_file.exists():
+            self._sent_illust_ids = {}
+            try:
+                self._sent_illust_ids_file.parent.mkdir(parents=True, exist_ok=True)
+                self._sent_illust_ids_file.write_text("{}", encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create sent illust ids file: %s", exc
+                )
+            return
+        try:
+            raw = json.loads(self._sent_illust_ids_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load sent illust ids, using empty set."
+            )
+            self._sent_illust_ids = {}
+            return
+
+        loaded: dict[str, set[int]] = {}
+        if isinstance(raw, dict):
+            for user_key, ids in raw.items():
+                if isinstance(user_key, str) and isinstance(ids, list):
+                    valid_ids = {
+                        int(i)
+                        for i in ids
+                        if isinstance(i, (int, str)) and str(i).isdigit()
+                    }
+                    if valid_ids:
+                        loaded[user_key] = valid_ids
+        self._sent_illust_ids = loaded
+
+    async def save_sent_illust_ids(self) -> None:
+        async with self._cache_lock:
+            try:
+                serializable = {k: list(v) for k, v in self._sent_illust_ids.items()}
+                self._sent_illust_ids_file.write_text(
+                    json.dumps(serializable, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning("[pixivdirect] Failed to save sent illust ids: %s", exc)
+
+    def _load_image_quality_config(self) -> None:
+        if not self._image_quality_file.exists():
+            self._image_quality_config = {}
+            try:
+                self._image_quality_file.parent.mkdir(parents=True, exist_ok=True)
+                self._image_quality_file.write_text("{}", encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create image quality config: %s", exc
+                )
+            return
+        try:
+            raw = json.loads(self._image_quality_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load image quality config, using default."
+            )
+            self._image_quality_config = {}
+            return
+
+        loaded: dict[str, str] = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                if isinstance(key, str) and isinstance(value, str):
+                    if value in ("original", "medium", "small"):
+                        loaded[key] = value
+        self._image_quality_config = loaded
+
+    async def save_image_quality_config(self) -> None:
+        async with self._cache_lock:
+            try:
+                self._image_quality_file.write_text(
+                    json.dumps(self._image_quality_config, ensure_ascii=False, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to save image quality config: %s", exc
+                )
+
+    def _load_custom_constants(self) -> None:
+        if not self._custom_constants_file.exists():
+            self._custom_constants = {}
+            try:
+                self._custom_constants_file.parent.mkdir(parents=True, exist_ok=True)
+                self._custom_constants_file.write_text("{}", encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create custom constants file: %s", exc
+                )
+            return
+        try:
+            raw = json.loads(self._custom_constants_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load custom constants, using defaults."
+            )
+            self._custom_constants = {}
+            return
+
+        if isinstance(raw, dict):
+            self._custom_constants = raw
+        else:
+            self._custom_constants = {}
+
+    async def save_custom_constants(self) -> None:
+        async with self._cache_lock:
+            try:
+                self._custom_constants_file.write_text(
+                    json.dumps(self._custom_constants, ensure_ascii=False, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning("[pixivdirect] Failed to save custom constants: %s", exc)
+
+    def get_constant(self, key: str, default: Any = None) -> Any:
+        """Get a constant value, checking custom constants first, then defaults."""
+        return self._custom_constants.get(key, default)

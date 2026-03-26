@@ -28,7 +28,7 @@ from .pixivSDK import pixiv
 from .utils import help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.5.0")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.6.0")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -65,6 +65,7 @@ class PixivDirectPlugin(Star):
             max_random_pages=MAX_RANDOM_PAGES,
             idle_cache_count=IDLE_CACHE_COUNT,
             default_cache_size=DEFAULT_CACHE_SIZE,
+            dns_time_getter=self.get_next_dns_refresh_time,
         )
 
     async def initialize(self):
@@ -127,6 +128,15 @@ class PixivDirectPlugin(Star):
     async def _mark_dns_refreshed(self) -> None:
         async with self._dns_refresh_lock:
             self._dns_next_refresh_at = self._next_dns_refresh_time()
+
+    def get_next_dns_refresh_time(self) -> str:
+        """Get the next DNS refresh time as a formatted string."""
+        if self._dns_next_refresh_at <= 0:
+            return "未设置"
+        from datetime import datetime
+
+        dt = datetime.fromtimestamp(self._dns_next_refresh_at)
+        return dt.strftime("%Y-%m-%d %H:%M:%S")
 
     async def _pixiv_call(
         self, action: str, params: dict[str, Any], **kwargs: Any
@@ -210,17 +220,28 @@ class PixivDirectPlugin(Star):
             return
 
         items_to_add = DEFAULT_CACHE_SIZE - len(current_queue)
-        items_to_add = min(items_to_add, IDLE_CACHE_COUNT)
+
+        # Default count from constants
+        default_count = min(items_to_add, IDLE_CACHE_COUNT)
 
         user_queue = self._config_manager.idle_cache_queue.get(uid, [])
         filter_params = {"restrict": "public", "max_pages": 3}
+        user_count = default_count
 
         if user_queue:
             queue_item = user_queue[0]
             filter_params = queue_item.get("filter_params", filter_params)
             remaining = queue_item.get("remaining", 1)
+            count = queue_item.get("count", 1)
 
-            if remaining != "always":
+            # Use user's count setting instead of hardcoded value
+            if remaining == "always":
+                user_count = default_count
+            else:
+                # Use the user-set count, but don't exceed items_to_add
+                user_count = min(
+                    items_to_add, int(count) if count != "always" else default_count
+                )
                 remaining = int(remaining) - 1
                 if remaining <= 0:
                     user_queue.pop(0)
@@ -229,6 +250,9 @@ class PixivDirectPlugin(Star):
                 if not user_queue:
                     self._config_manager.idle_cache_queue.pop(uid, None)
                 await self._config_manager.save_idle_cache_queue()
+
+        # Use user_count instead of items_to_add
+        items_to_add = user_count
 
         latest_refresh_token, error = await self._command_handler._enqueue_random_items(
             user_key=uid,

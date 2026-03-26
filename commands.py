@@ -37,6 +37,7 @@ class CommandHandler:
         max_random_pages: int,
         idle_cache_count: int,
         default_cache_size: int,
+        dns_time_getter=None,
     ) -> None:
         self._config = config_manager
         self._cache = cache_manager
@@ -47,6 +48,7 @@ class CommandHandler:
         self._max_random_pages = max_random_pages
         self._idle_cache_count = idle_cache_count
         self._default_cache_size = default_cache_size
+        self._dns_time_getter = dns_time_getter
         self._last_command_ts: dict[str, float] = {}
         self._rate_limit_lock = asyncio.Lock()
 
@@ -326,62 +328,164 @@ class CommandHandler:
                     yield event.plain_result(f"{caption}\n\n❌ 动图处理失败：{exc}")
                     return
 
-            # Handle normal image
-            preview_url = None
-            image_urls = illust.get("image_urls")
-            if isinstance(image_urls, dict):
-                for key in ("large", "medium", "square_medium"):
-                    value = image_urls.get(key)
-                    if isinstance(value, str) and value:
-                        preview_url = value
-                        break
-            if not preview_url:
-                meta_single_page = illust.get("meta_single_page")
-                if isinstance(meta_single_page, dict):
-                    value = meta_single_page.get("original_image_url")
-                    if isinstance(value, str) and value:
-                        preview_url = value
+            # Handle normal image - support multi-image illusts
+            page_count = illust.get("page_count", 1)
 
-            if preview_url:
+            # Get image quality for this entity
+            group_id = event.get_group_id()
+            entity_key = f"group:{group_id}" if group_id else f"user:{user_key(event)}"
+            quality = self._config.get_image_quality(entity_key)
+
+            # Import helper for multi-image
+            from .constants import MULTI_IMAGE_THRESHOLD
+            from .pixivSDK import _pick_illust_image_urls
+
+            all_image_urls = _pick_illust_image_urls(illust, quality)
+
+            if all_image_urls:
                 try:
-                    local_path = await self._image.download_image_to_cache(
-                        preview_url,
-                        access_token=result.get("access_token"),
-                        refresh_token=latest_refresh_token,
-                        name_prefix=f"illust_{illust.get('id') or target_id}",
-                    )
-                    yield event.make_result().message(caption).file_image(local_path)
+                    if page_count <= MULTI_IMAGE_THRESHOLD:
+                        # Download and send all images directly
+                        for i, img_url in enumerate(
+                            all_image_urls[:MULTI_IMAGE_THRESHOLD]
+                        ):
+                            try:
+                                local_path = await self._image.download_image_to_cache(
+                                    img_url,
+                                    access_token=result.get("access_token"),
+                                    refresh_token=latest_refresh_token,
+                                    name_prefix=f"illust_{illust.get('id') or target_id}_{i}",
+                                )
+                                if i == 0:
+                                    yield (
+                                        event.make_result()
+                                        .message(caption)
+                                        .file_image(local_path)
+                                    )
+                                else:
+                                    yield event.make_result().file_image(local_path)
+                            except Exception as exc:
+                                logger.warning(
+                                    "[pixivdirect] Image download failed: %s", exc
+                                )
 
-                    # Cache the illust
-                    try:
-                        _user_key = user_key(event)
-                        _user_cache = self._config.random_cache.setdefault(
-                            _user_key, {}
+                        # Cache the first image
+                        try:
+                            _user_key = user_key(event)
+                            _user_cache = self._config.random_cache.setdefault(
+                                _user_key, {}
+                            )
+                            _queue = _user_cache.setdefault(DEFAULT_POOL_KEY, [])
+                            first_path = await self._image.download_image_to_cache(
+                                all_image_urls[0],
+                                access_token=result.get("access_token"),
+                                refresh_token=latest_refresh_token,
+                                name_prefix=f"illust_{illust.get('id') or target_id}_cache",
+                            )
+                            _queue.append(
+                                {
+                                    "path": first_path,
+                                    "caption": caption,
+                                    "x_restrict": illust.get("x_restrict", 0)
+                                    if isinstance(illust.get("x_restrict"), int)
+                                    else 0,
+                                    "tags": tags,
+                                    "illust_id": int(target_id)
+                                    if target_id.isdigit()
+                                    else None,
+                                    "page_count": page_count,
+                                }
+                            )
+                            await self._config.save_cache_index()
+                        except Exception as exc:
+                            logger.warning(
+                                "[pixivdirect] Failed to cache illust %s: %s",
+                                target_id,
+                                exc,
+                            )
+                    else:
+                        # Use forward message for many images
+                        from astrbot.api.message_components import (
+                            Image as ImageComp,
                         )
-                        _queue = _user_cache.setdefault(DEFAULT_POOL_KEY, [])
-                        _queue.append(
-                            {
-                                "path": local_path,
-                                "caption": caption,
-                                "x_restrict": illust.get("x_restrict", 0)
-                                if isinstance(illust.get("x_restrict"), int)
-                                else 0,
-                                "tags": tags,
-                                "illust_id": int(target_id)
-                                if target_id.isdigit()
-                                else None,
-                            }
+                        from astrbot.api.message_components import (
+                            Node,
+                            Nodes,
                         )
-                        await self._config.save_cache_index()
-                    except Exception as exc:
-                        logger.warning(
-                            "[pixivdirect] Failed to cache illust %s: %s",
-                            target_id,
-                            exc,
-                        )
+
+                        # Download all images
+                        local_paths = []
+                        for i, img_url in enumerate(
+                            all_image_urls[:20]
+                        ):  # Max 20 images
+                            try:
+                                local_path = await self._image.download_image_to_cache(
+                                    img_url,
+                                    access_token=result.get("access_token"),
+                                    refresh_token=latest_refresh_token,
+                                    name_prefix=f"illust_{illust.get('id') or target_id}_{i}",
+                                )
+                                local_paths.append(local_path)
+                            except Exception as exc:
+                                logger.warning(
+                                    "[pixivdirect] Image download failed: %s", exc
+                                )
+
+                        if local_paths:
+                            # Send first image with caption, then forward the rest
+                            yield (
+                                event.make_result()
+                                .message(caption)
+                                .file_image(local_paths[0])
+                            )
+
+                            if len(local_paths) > 1:
+                                # Construct forward message nodes
+                                nodes = []
+                                for path in local_paths[1:]:
+                                    node = Node(
+                                        content=[ImageComp(file=path)],
+                                        name="PixivBot",
+                                        uin=str(event.get_self_id() or "0"),
+                                    )
+                                    nodes.append(node)
+
+                                if nodes:
+                                    forward_msg = Nodes(nodes=nodes)
+                                    yield event.make_result().chain([forward_msg])
+
+                        # Cache the first image
+                        try:
+                            _user_key = user_key(event)
+                            _user_cache = self._config.random_cache.setdefault(
+                                _user_key, {}
+                            )
+                            _queue = _user_cache.setdefault(DEFAULT_POOL_KEY, [])
+                            if local_paths:
+                                _queue.append(
+                                    {
+                                        "path": local_paths[0],
+                                        "caption": caption,
+                                        "x_restrict": illust.get("x_restrict", 0)
+                                        if isinstance(illust.get("x_restrict"), int)
+                                        else 0,
+                                        "tags": tags,
+                                        "illust_id": int(target_id)
+                                        if target_id.isdigit()
+                                        else None,
+                                        "page_count": page_count,
+                                    }
+                                )
+                                await self._config.save_cache_index()
+                        except Exception as exc:
+                            logger.warning(
+                                "[pixivdirect] Failed to cache illust %s: %s",
+                                target_id,
+                                exc,
+                            )
                     return
                 except Exception as exc:
-                    logger.warning("[pixivdirect] Preview download failed: %s", exc)
+                    logger.warning("[pixivdirect] Image processing failed: %s", exc)
 
             yield event.plain_result(caption)
             return
@@ -454,8 +558,17 @@ class CommandHandler:
                 )
                 return
             else:
+                # Show next refresh time
+                next_refresh = "未知"
+                if self._dns_time_getter:
+                    try:
+                        next_refresh = self._dns_time_getter()
+                    except Exception:
+                        pass
                 yield event.plain_result(
-                    "ℹ️ DNS 刷新状态：\n- 使用 /pixiv dns refresh 手动触发刷新"
+                    f"ℹ️ DNS 刷新状态：\n"
+                    f"- 下次刷新时间: {next_refresh}\n"
+                    f"- 使用 /pixiv dns refresh 手动触发刷新"
                 )
                 return
 
@@ -743,6 +856,129 @@ class CommandHandler:
                 )
                 return
 
+        # Handle quality config
+        if len(args) >= 2 and args[1].lower() == "quality":
+            key = user_key(event)
+            # For group chats, use group ID as key
+            group_id = event.get_group_id()
+            entity_key = f"group:{group_id}" if group_id else f"user:{key}"
+
+            if len(args) >= 3:
+                if not event.is_admin():
+                    yield event.plain_result("❌ 仅 AstrBot 管理员可修改图片质量设置。")
+                    return
+                value = args[2].lower()
+                if value in ("original", "原图"):
+                    self._config.image_quality_config[entity_key] = "original"
+                    await self._config.save_image_quality_config()
+                    yield event.plain_result("✅ 已设置图片质量为：原图")
+                    return
+                elif value in ("medium", "中等"):
+                    self._config.image_quality_config[entity_key] = "medium"
+                    await self._config.save_image_quality_config()
+                    yield event.plain_result("✅ 已设置图片质量为：中等")
+                    return
+                elif value in ("small", "小图"):
+                    self._config.image_quality_config[entity_key] = "small"
+                    await self._config.save_image_quality_config()
+                    yield event.plain_result("✅ 已设置图片质量为：小图")
+                    return
+                else:
+                    yield event.plain_result(
+                        "❌ 无效的值，请使用 original/medium/small"
+                    )
+                    return
+            else:
+                quality = self._config.get_image_quality(entity_key)
+                quality_name = {
+                    "original": "原图",
+                    "medium": "中等",
+                    "small": "小图",
+                }.get(quality, quality)
+                yield event.plain_result(
+                    f"ℹ️ 当前图片质量：{quality_name}\n"
+                    f"使用 /pixiv random quality original/medium/small 修改"
+                )
+                return
+
+        # Handle config command (admin only)
+        if len(args) >= 2 and args[1].lower() == "config":
+            if not event.is_admin():
+                yield event.plain_result("❌ 仅 AstrBot 管理员可修改配置。")
+                return
+
+            from .constants import CONFIGURABLE_CONSTANTS
+
+            if len(args) >= 3 and args[2].lower() == "list":
+                config_text = "📋 可配置常量：\n"
+                for key, default in CONFIGURABLE_CONSTANTS.items():
+                    custom = self._config.custom_constants.get(key)
+                    if custom is not None:
+                        config_text += f"- {key}: {custom} (默认: {default})\n"
+                    else:
+                        config_text += f"- {key}: {default}\n"
+                yield event.plain_result(config_text.strip())
+                return
+            elif len(args) >= 3 and args[2].lower() == "get":
+                if len(args) >= 4:
+                    key = args[3]
+                    if key in CONFIGURABLE_CONSTANTS:
+                        value = self._config.get_constant(
+                            key, CONFIGURABLE_CONSTANTS[key]
+                        )
+                        yield event.plain_result(f"ℹ️ {key} = {value}")
+                    else:
+                        yield event.plain_result(f"❌ 未知配置项：{key}")
+                else:
+                    yield event.plain_result("❌ 用法：/pixiv config get <key>")
+                return
+            elif len(args) >= 3 and args[2].lower() == "set":
+                if len(args) >= 5:
+                    key = args[3]
+                    value_str = args[4]
+                    if key not in CONFIGURABLE_CONSTANTS:
+                        yield event.plain_result(f"❌ 未知配置项：{key}")
+                        return
+                    try:
+                        # Try to parse as number
+                        if "." in value_str:
+                            value = float(value_str)
+                        else:
+                            value = int(value_str)
+                    except ValueError:
+                        yield event.plain_result("❌ 值必须是数字")
+                        return
+                    self._config.custom_constants[key] = value
+                    await self._config.save_custom_constants()
+                    yield event.plain_result(f"✅ 已设置 {key} = {value}")
+                else:
+                    yield event.plain_result("❌ 用法：/pixiv config set <key> <value>")
+                return
+            elif len(args) >= 3 and args[2].lower() == "reset":
+                if len(args) >= 4:
+                    key = args[3]
+                    if key in CONFIGURABLE_CONSTANTS:
+                        self._config.custom_constants.pop(key, None)
+                        await self._config.save_custom_constants()
+                        yield event.plain_result(f"✅ 已重置 {key} 为默认值")
+                    else:
+                        yield event.plain_result(f"❌ 未知配置项：{key}")
+                else:
+                    # Reset all
+                    self._config.custom_constants.clear()
+                    await self._config.save_custom_constants()
+                    yield event.plain_result("✅ 已重置所有配置为默认值")
+                return
+            else:
+                yield event.plain_result(
+                    "📋 用法：\n"
+                    "- /pixiv config list  # 查看所有配置\n"
+                    "- /pixiv config get <key>  # 获取配置值\n"
+                    "- /pixiv config set <key> <value>  # 设置配置值\n"
+                    "- /pixiv config reset [key]  # 重置配置"
+                )
+                return
+
         # Parse @username and filter params
         # Detect QQ @mention via At component - if present, skip all @ tokens in text
         from astrbot.api.message_components import At
@@ -1002,6 +1238,9 @@ class CommandHandler:
         refresh_token: str,
         filter_params: dict[str, Any],
         count: int,
+        exclude_sent: bool = False,
+        extended_scan: bool = False,
+        thorough_random: bool = False,
     ) -> tuple[str, str | None]:
         """Enqueue random bookmark items to cache."""
         latest_refresh_token = refresh_token
@@ -1009,10 +1248,24 @@ class CommandHandler:
         queue = user_cache.setdefault(DEFAULT_POOL_KEY, [])
         pending_items: list[dict[str, Any]] = []
 
+        # Get sent IDs for unique mode
+        sent_ids = (
+            self._config.get_sent_ids_for_user(user_key) if exclude_sent else set()
+        )
+
         for _ in range(max(1, count)):
+            # Build params with exclude_ids and random options
+            call_params = dict(filter_params)
+            if exclude_sent and sent_ids:
+                call_params["exclude_ids"] = list(sent_ids)
+            if extended_scan:
+                call_params["extended_scan"] = True
+            if thorough_random:
+                call_params["random"] = True
+
             random_result = await self._pixiv_call(
                 "random_bookmark_image",
-                filter_params,
+                call_params,
                 refresh_token=latest_refresh_token,
             )
             if not random_result.get("ok"):

@@ -433,6 +433,80 @@ def _pick_illust_image_url(illust: dict[str, Any]) -> str | None:
     return None
 
 
+def _pick_illust_image_urls(
+    illust: dict[str, Any], quality: str = "original"
+) -> list[str]:
+    """Pick all image URLs from an illust based on quality preference.
+
+    Args:
+        illust: The illust dict from Pixiv API
+        quality: "original", "medium", or "small"
+
+    Returns:
+        List of image URLs
+    """
+    quality_keys = {
+        "original": ("original", "large", "medium", "square_medium"),
+        "medium": ("large", "medium", "original", "square_medium"),
+        "small": ("square_medium", "medium", "large", "original"),
+    }
+    keys = quality_keys.get(quality, quality_keys["original"])
+
+    urls: list[str] = []
+
+    # Check meta_pages for multi-page illusts
+    meta_pages = illust.get("meta_pages")
+    if isinstance(meta_pages, list) and meta_pages:
+        for page in meta_pages:
+            if isinstance(page, dict):
+                image_urls = page.get("image_urls")
+                if isinstance(image_urls, dict):
+                    for key in keys:
+                        url = image_urls.get(key)
+                        if isinstance(url, str) and url:
+                            urls.append(url)
+                            break
+
+    # Single page illust
+    if not urls:
+        meta_single = illust.get("meta_single_page")
+        if isinstance(meta_single, dict):
+            original = meta_single.get("original_image_url")
+            if isinstance(original, str) and original:
+                if quality == "small":
+                    # For small quality, try to get square_medium from image_urls
+                    image_urls = illust.get("image_urls")
+                    if isinstance(image_urls, dict):
+                        sq = image_urls.get("square_medium")
+                        if isinstance(sq, str) and sq:
+                            urls.append(sq)
+                        else:
+                            urls.append(original)
+                elif quality == "medium":
+                    # For medium quality, try to get large from image_urls
+                    image_urls = illust.get("image_urls")
+                    if isinstance(image_urls, dict):
+                        large = image_urls.get("large")
+                        if isinstance(large, str) and large:
+                            urls.append(large)
+                        else:
+                            urls.append(original)
+                else:
+                    urls.append(original)
+
+    # Fallback to image_urls
+    if not urls:
+        image_urls = illust.get("image_urls")
+        if isinstance(image_urls, dict):
+            for key in keys:
+                url = image_urls.get(key)
+                if isinstance(url, str) and url:
+                    urls.append(url)
+                    break
+
+    return urls
+
+
 def _match_author(
     illust: dict[str, Any],
     *,
@@ -879,6 +953,23 @@ def pixiv(
         if restrict not in {"public", "private"}:
             restrict = "public"
 
+        # Exclude sent IDs for unique mode
+        exclude_ids_raw = params.get("exclude_ids")
+        exclude_ids: set[int] = set()
+        if isinstance(exclude_ids_raw, (list, set)):
+            exclude_ids = {
+                int(i)
+                for i in exclude_ids_raw
+                if isinstance(i, (int, str)) and str(i).isdigit()
+            }
+
+        # Thorough random mode
+        thorough_random = str(params.get("random", "false")).lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
         list_params: dict[str, Any] = {
             "user_id": bookmark_user_id,
             "restrict": restrict,
@@ -893,7 +984,14 @@ def pixiv(
         max_pages = 3
         if max_pages_raw is not None and str(max_pages_raw).strip():
             max_pages = max(1, int(str(max_pages_raw)))
+
+        # Extended scan for unique mode
+        extended_scan = params.get("extended_scan", False)
+        max_scan_pages = 9 if extended_scan else max_pages
         status_code = 200
+
+        # Collect all candidates for thorough random mode
+        all_candidates: list[dict[str, Any]] = [] if thorough_random else []
 
         # First, try with bookmark tag filter (API-level)
         # If no results, fall back to filtering by illust's own tags
@@ -930,8 +1028,14 @@ def pixiv(
                         continue
                     if use_illust_tag_filter and not _match_illust_tag(illust, tag):
                         continue
+                    # Skip excluded IDs
+                    illust_id = illust.get("id")
+                    if isinstance(illust_id, int) and illust_id in exclude_ids:
+                        continue
                     matched += 1
-                    if random.randrange(matched) == 0:
+                    if thorough_random:
+                        all_candidates.append(illust)
+                    elif random.randrange(matched) == 0:
                         sampled = illust
 
             next_url_val = page_data.get("next_url")
@@ -940,11 +1044,11 @@ def pixiv(
                 next_params = None
             else:
                 next_url = None
-            if pages >= max_pages:
+            if pages >= max_scan_pages:
                 next_url = None
 
         # If no results with bookmark tag, retry filtering by illust's own tags
-        if not sampled and tag and not use_illust_tag_filter:
+        if not sampled and not all_candidates and tag and not use_illust_tag_filter:
             use_illust_tag_filter = True
             matched = 0
             pages = 0
@@ -970,8 +1074,14 @@ def pixiv(
                             continue
                         if not _match_illust_tag(illust, tag):
                             continue
+                        # Skip excluded IDs
+                        illust_id = illust.get("id")
+                        if isinstance(illust_id, int) and illust_id in exclude_ids:
+                            continue
                         matched += 1
-                        if random.randrange(matched) == 0:
+                        if thorough_random:
+                            all_candidates.append(illust)
+                        elif random.randrange(matched) == 0:
                             sampled = illust
 
                 next_url_val = page_data.get("next_url")
@@ -980,8 +1090,12 @@ def pixiv(
                     next_params = None
                 else:
                     next_url = None
-                if pages >= max_pages:
+                if pages >= max_scan_pages:
                     next_url = None
+
+        # Thorough random: pick random from all candidates
+        if thorough_random and all_candidates:
+            sampled = random.choice(all_candidates)
 
         if not sampled:
             return {
