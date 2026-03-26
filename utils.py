@@ -274,7 +274,7 @@ def help_text() -> str:
         "- /pixiv random unique true/false  # 管理员：开启/关闭唯一随机模式\n"
         "- /pixiv random quality original/medium/small  # 管理员：设置图片质量\n"
         "- /pixiv random groupblock add/remove/list/clear [tag]  # 管理员：群聊屏蔽标签\n"
-        "- /pixiv random cache add/list/clear/now [筛选条件|N]  # 闲时缓存管理\n"
+        "- /pixiv random cache add/list/clear/now/nowall/schedule [筛选条件|N]  # 闲时缓存管理\n"
         "- /pixiv dns  # 查看 DNS 刷新状态\n"
         "- /pixiv dns refresh  # 管理员：手动刷新 DNS\n"
         "- /pixiv config list/get/set/reset [key] [value]  # 管理员：配置管理\n"

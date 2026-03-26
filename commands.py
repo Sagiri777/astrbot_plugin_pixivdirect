@@ -45,6 +45,8 @@ class CommandHandler:
         idle_cache_count: int,
         default_cache_size: int,
         dns_time_getter=None,
+        idle_cache_time_getter=None,
+        idle_cache_all_func=None,
     ) -> None:
         self._config = config_manager
         self._cache = cache_manager
@@ -56,6 +58,8 @@ class CommandHandler:
         self._idle_cache_count = idle_cache_count
         self._default_cache_size = default_cache_size
         self._dns_time_getter = dns_time_getter
+        self._idle_cache_time_getter = idle_cache_time_getter
+        self._idle_cache_all_func = idle_cache_all_func
         self._last_command_ts: dict[str, float] = {}
         self._rate_limit_lock = asyncio.Lock()
 
@@ -853,13 +857,42 @@ class CommandHandler:
                             f"✅ 即时缓存 {success_count} 张已完成"
                         )
                 return
+            elif len(args) >= 3 and args[2].lower() == "nowall":
+                if not event.is_admin():
+                    yield event.plain_result("❌ 仅 AstrBot 管理员可使用此命令。")
+                    return
+
+                if not self._idle_cache_all_func:
+                    yield event.plain_result("❌ 闲时缓存功能未初始化。")
+                    return
+
+                yield event.plain_result("⏳ 正在为所有用户触发闲时缓存...")
+                await self._idle_cache_all_func()
+                yield event.plain_result("✅ 已为所有用户触发闲时缓存完成。")
+                return
+            elif len(args) >= 3 and args[2].lower() == "schedule":
+                next_time = "未知"
+                if self._idle_cache_time_getter:
+                    try:
+                        next_time = self._idle_cache_time_getter()
+                    except Exception:
+                        pass
+                yield event.plain_result(
+                    f"ℹ️ 闲时缓存状态：\n"
+                    f"- 下次执行时间: {next_time}\n"
+                    f"- 使用 /pixiv random cache now N 为当前用户立即缓存\n"
+                    f"- 使用 /pixiv random cache nowall 为所有用户触发缓存（管理员）"
+                )
+                return
             else:
                 yield event.plain_result(
                     "📋 用法：\n"
                     "- /pixiv random cache add tag=xxx count=N|always  # 添加缓存任务\n"
                     "- /pixiv random cache list  # 查看队列\n"
                     "- /pixiv random cache clear  # 清空队列\n"
-                    "- /pixiv random cache now N  # 立即缓存N张"
+                    "- /pixiv random cache now N  # 立即为当前用户缓存N张\n"
+                    "- /pixiv random cache nowall  # 管理员：为所有用户触发缓存\n"
+                    "- /pixiv random cache schedule  # 查看下次闲时缓存时间"
                 )
                 return
 

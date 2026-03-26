@@ -66,6 +66,8 @@ class PixivDirectPlugin(Star):
             idle_cache_count=IDLE_CACHE_COUNT,
             default_cache_size=DEFAULT_CACHE_SIZE,
             dns_time_getter=self.get_next_dns_refresh_time,
+            idle_cache_time_getter=self.get_next_idle_cache_time,
+            idle_cache_all_func=self.trigger_idle_cache_all,
         )
 
     async def initialize(self):
@@ -137,6 +139,26 @@ class PixivDirectPlugin(Star):
 
         dt = datetime.fromtimestamp(self._dns_next_refresh_at)
         return dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    def get_next_idle_cache_time(self) -> str:
+        """Get the next idle cache time as a formatted string."""
+        if self._last_idle_cache_ts <= 0:
+            return "未触发过"
+        from datetime import datetime
+
+        next_ts = self._last_idle_cache_ts + IDLE_CACHE_INTERVAL_SECONDS
+        dt = datetime.fromtimestamp(next_ts)
+        now = datetime.now()
+        delta = next_ts - now.timestamp()
+        if delta <= 0:
+            return "即将执行"
+        minutes = int(delta // 60)
+        seconds = int(delta % 60)
+        return f"{dt.strftime('%Y-%m-%d %H:%M:%S')} (约 {minutes} 分 {seconds} 秒后)"
+
+    async def trigger_idle_cache_all(self) -> None:
+        """Trigger idle cache for all users."""
+        await self._perform_idle_cache()
 
     async def _pixiv_call(
         self, action: str, params: dict[str, Any], **kwargs: Any
