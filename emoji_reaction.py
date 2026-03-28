@@ -45,6 +45,29 @@ class EmojiReactionHandler:
             }
         return False
 
+    @staticmethod
+    def _extract_aiocqhttp_message_id(event: AstrMessageEvent) -> Any | None:
+        if event.get_platform_name() != "aiocqhttp":
+            return None
+
+        from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
+            AiocqhttpMessageEvent,
+        )
+
+        if not isinstance(event, AiocqhttpMessageEvent):
+            return None
+
+        return getattr(getattr(event, "message_obj", None), "message_id", None)
+
+    @staticmethod
+    def _get_stage_emoji_ids(stage: str) -> list[int]:
+        emoji_ids: list[int] = []
+        for emoji_name in STAGE_EMOJIS.get(stage, []):
+            emoji_id = EMOJI_MAP.get(emoji_name)
+            if emoji_id is not None:
+                emoji_ids.append(emoji_id)
+        return emoji_ids
+
     async def _set_emoji_like(
         self, event: AstrMessageEvent, message_id: Any, emoji_id: int, set_: bool = True
     ) -> bool:
@@ -91,21 +114,7 @@ class EmojiReactionHandler:
             return
 
         try:
-            # Only support aiocqhttp platform
-            if event.get_platform_name() != "aiocqhttp":
-                return
-
-            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
-                AiocqhttpMessageEvent,
-            )
-
-            if not isinstance(event, AiocqhttpMessageEvent):
-                return
-
-            # Get message ID
-            message_id = getattr(
-                getattr(event, "message_obj", None), "message_id", None
-            )
+            message_id = self._extract_aiocqhttp_message_id(event)
             if message_id is None:
                 return
 
@@ -119,17 +128,7 @@ class EmojiReactionHandler:
                 return
 
             # Get emoji list for current stage
-            emoji_names = STAGE_EMOJIS.get(stage, [])
-            if not emoji_names:
-                return
-
-            # Get emoji IDs
-            emoji_ids: list[int] = []
-            for emoji_name in emoji_names:
-                emoji_id = EMOJI_MAP.get(emoji_name)
-                if emoji_id is not None:
-                    emoji_ids.append(emoji_id)
-
+            emoji_ids = self._get_stage_emoji_ids(stage)
             if not emoji_ids:
                 return
 
@@ -154,32 +153,11 @@ class EmojiReactionHandler:
             return
 
         try:
-            if event.get_platform_name() != "aiocqhttp":
-                return
-
-            from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
-                AiocqhttpMessageEvent,
-            )
-
-            if not isinstance(event, AiocqhttpMessageEvent):
-                return
-
-            message_id = getattr(
-                getattr(event, "message_obj", None), "message_id", None
-            )
+            message_id = self._extract_aiocqhttp_message_id(event)
             if message_id is None:
                 return
 
-            emoji_names = STAGE_EMOJIS.get(stage, [])
-            if not emoji_names:
-                return
-
-            emoji_ids: list[int] = []
-            for emoji_name in emoji_names:
-                emoji_id = EMOJI_MAP.get(emoji_name)
-                if emoji_id is not None:
-                    emoji_ids.append(emoji_id)
-
+            emoji_ids = self._get_stage_emoji_ids(stage)
             if not emoji_ids:
                 return
 

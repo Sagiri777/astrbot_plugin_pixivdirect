@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.8.4] - 2026-03-29
+
+### Changed
+- 抽取 `image_handler.py` 中图片/动图二进制下载的公共逻辑，统一动图帧延迟与压缩包图像列表处理
+- 抽取 `emoji_reaction.py` 中 aiocqhttp 消息上下文与阶段表情 ID 解析逻辑，减少重复分支
+
+### Fixed
+- 优化表情反应处理流程，避免添加和移除路径分别维护各自的平台判断与消息 ID 提取代码
+
 ## [1.8.3] - 2026-03-29
 
 ### Changed

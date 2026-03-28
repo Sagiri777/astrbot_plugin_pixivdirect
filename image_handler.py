@@ -38,6 +38,57 @@ class ImageHandler:
         name = raw if raw else fallback
         return re.sub(r"[^a-zA-Z0-9._-]+", "_", name) or fallback
 
+    async def _download_binary_to_cache(
+        self,
+        action: str,
+        resource_url: str,
+        *,
+        access_token: str | None,
+        refresh_token: str,
+        name_prefix: str,
+        fallback_name: str,
+        binary_label: str,
+    ) -> str:
+        result = await self._pixiv_call(
+            action,
+            {"url": resource_url},
+            access_token=access_token,
+            refresh_token=refresh_token,
+        )
+        if not result.get("ok"):
+            raise RuntimeError(self.format_pixiv_error(result))
+
+        content = result.get("content")
+        if not isinstance(content, (bytes, bytearray)):
+            raise RuntimeError(f"Pixiv {binary_label}响应未返回二进制内容。")
+
+        safe_name = self.safe_filename_from_url(resource_url, fallback_name)
+        target = (
+            self._cache_dir / f"{name_prefix}_{int(time.time() * 1000)}_{safe_name}"
+        )
+        target.write_bytes(bytes(content))
+        return str(target)
+
+    @staticmethod
+    def _collect_frame_delays(frames: list[dict[str, Any]]) -> dict[str, int]:
+        frame_delays: dict[str, int] = {}
+        for frame in frames:
+            file_name = frame.get("file", "")
+            delay = frame.get("delay", 100)
+            if file_name:
+                frame_delays[file_name] = delay
+        return frame_delays
+
+    @staticmethod
+    def _list_archive_image_files(zip_file: zipfile.ZipFile) -> list[str]:
+        return sorted(
+            [
+                name
+                for name in zip_file.namelist()
+                if name.lower().endswith((".jpg", ".jpeg", ".png"))
+            ]
+        )
+
     async def download_image_to_cache(
         self,
         image_url: str,
@@ -47,25 +98,15 @@ class ImageHandler:
         name_prefix: str,
     ) -> str:
         """Download an image to the cache directory and return the local path."""
-        image_result = await self._pixiv_call(
+        return await self._download_binary_to_cache(
             "image",
-            {"url": image_url},
+            image_url,
             access_token=access_token,
             refresh_token=refresh_token,
+            name_prefix=name_prefix,
+            fallback_name=f"{name_prefix}.bin",
+            binary_label="图片",
         )
-        if not image_result.get("ok"):
-            raise RuntimeError(self.format_pixiv_error(image_result))
-
-        content = image_result.get("content")
-        if not isinstance(content, (bytes, bytearray)):
-            raise RuntimeError("Pixiv 图片响应未返回二进制内容。")
-
-        safe_name = self.safe_filename_from_url(image_url, f"{name_prefix}.bin")
-        target = (
-            self._cache_dir / f"{name_prefix}_{int(time.time() * 1000)}_{safe_name}"
-        )
-        target.write_bytes(bytes(content))
-        return str(target)
 
     async def download_ugoira_zip_to_cache(
         self,
@@ -76,25 +117,15 @@ class ImageHandler:
         name_prefix: str,
     ) -> str:
         """Download an ugoira zip file to the cache directory."""
-        zip_result = await self._pixiv_call(
+        return await self._download_binary_to_cache(
             "ugoira_zip",
-            {"url": zip_url},
+            zip_url,
             access_token=access_token,
             refresh_token=refresh_token,
+            name_prefix=name_prefix,
+            fallback_name=f"{name_prefix}.zip",
+            binary_label="动图 zip",
         )
-        if not zip_result.get("ok"):
-            raise RuntimeError(self.format_pixiv_error(zip_result))
-
-        content = zip_result.get("content")
-        if not isinstance(content, (bytes, bytearray)):
-            raise RuntimeError("Pixiv 动图 zip 响应未返回二进制内容。")
-
-        safe_name = self.safe_filename_from_url(zip_url, f"{name_prefix}.zip")
-        target = (
-            self._cache_dir / f"{name_prefix}_{int(time.time() * 1000)}_{safe_name}"
-        )
-        target.write_bytes(bytes(content))
-        return str(target)
 
     def render_ugoira_to_gif(
         self,
@@ -119,20 +150,8 @@ class ImageHandler:
     ) -> None:
         """Render ugoira zip to GIF using PIL."""
         with zipfile.ZipFile(zip_path, "r") as zip_file:
-            frame_delays = {}
-            for frame in frames:
-                file_name = frame.get("file", "")
-                delay = frame.get("delay", 100)
-                if file_name:
-                    frame_delays[file_name] = delay
-
-            image_files = sorted(
-                [
-                    f
-                    for f in zip_file.namelist()
-                    if f.lower().endswith((".jpg", ".jpeg", ".png"))
-                ]
-            )
+            frame_delays = self._collect_frame_delays(frames)
+            image_files = self._list_archive_image_files(zip_file)
 
             if not image_files:
                 raise RuntimeError("动图 zip 文件中没有找到图像文件。")
@@ -170,24 +189,13 @@ class ImageHandler:
         if not shutil.which("ffmpeg"):
             raise RuntimeError("ffmpeg 未安装，无法渲染动图。")
 
-        frame_delays = {}
-        for frame in frames:
-            file_name = frame.get("file", "")
-            delay = frame.get("delay", 100)
-            if file_name:
-                frame_delays[file_name] = delay
+        frame_delays = self._collect_frame_delays(frames)
 
         with tempfile.TemporaryDirectory() as tmpdir:
             tmpdir_path = Path(tmpdir)
 
             with zipfile.ZipFile(zip_path, "r") as zip_file:
-                image_files = sorted(
-                    [
-                        f
-                        for f in zip_file.namelist()
-                        if f.lower().endswith((".jpg", ".jpeg", ".png"))
-                    ]
-                )
+                image_files = self._list_archive_image_files(zip_file)
                 if not image_files:
                     raise RuntimeError("动图 zip 文件中没有找到图像文件。")
 
