@@ -34,6 +34,9 @@ from .utils import (
 class CommandHandler:
     """Handles all Pixiv plugin commands."""
 
+    _TRUE_VALUES = frozenset({"true", "1", "yes", "on"})
+    _FALSE_VALUES = frozenset({"false", "0", "no", "off"})
+
     def __init__(
         self,
         config_manager: ConfigManager,
@@ -98,6 +101,44 @@ class CommandHandler:
             return False
         self._config.add_sent_id_for_user(user_id, illust_id)
         return True
+
+    @classmethod
+    def _parse_bool_value(cls, raw_value: str) -> bool | None:
+        value = raw_value.strip().lower()
+        if value in cls._TRUE_VALUES:
+            return True
+        if value in cls._FALSE_VALUES:
+            return False
+        return None
+
+    @staticmethod
+    def _build_cache_item(
+        *,
+        path: str,
+        caption: str,
+        x_restrict: Any,
+        tags: list[str],
+        illust_id: int | None = None,
+        author_id: int | str | None = None,
+        author_name: str = "",
+        page_count: Any = 1,
+    ) -> dict[str, Any]:
+        return {
+            "path": path,
+            "caption": caption,
+            "x_restrict": x_restrict if isinstance(x_restrict, int) else 0,
+            "tags": tags,
+            "illust_id": illust_id,
+            "author_id": author_id,
+            "author_name": author_name,
+            "page_count": page_count if isinstance(page_count, int) else 1,
+        }
+
+    async def _append_cache_item(self, user_id: str, item: dict[str, Any]) -> None:
+        user_cache = self._config.random_cache.setdefault(user_id, {})
+        queue = user_cache.setdefault(DEFAULT_POOL_KEY, [])
+        queue.append(item)
+        await self._config.save_cache_index()
 
     @staticmethod
     def _normalize_group_block_tag(raw_tag: str) -> str:
@@ -238,12 +279,14 @@ class CommandHandler:
         now = time.time()
         async with self._rate_limit_lock:
             last = self._last_command_ts.get(key)
+            min_interval = self._get_min_command_interval()
+            if last is None:
+                self._last_command_ts[key] = now
+                return None
+            wait_seconds = min_interval - (now - last)
+            if wait_seconds > 0:
+                return f"⏳ 请求过于频繁，请在 {wait_seconds:.1f} 秒后重试。"
             self._last_command_ts[key] = now
-        if last is None:
-            return None
-        wait_seconds = self._get_min_command_interval() - (now - last)
-        if wait_seconds > 0:
-            return f"⏳ 请求过于频繁，请在 {wait_seconds:.1f} 秒后重试。"
         return None
 
     def get_user_token(self, event: AstrMessageEvent) -> str | None:
@@ -494,25 +537,21 @@ class CommandHandler:
 
                     # Cache the ugoira
                     try:
-                        _user_key = user_key(event)
-                        _user_cache = self._config.random_cache.setdefault(
-                            _user_key, {}
-                        )
-                        _queue = _user_cache.setdefault(DEFAULT_POOL_KEY, [])
-                        _queue.append(
-                            {
-                                "path": str(gif_path),
-                                "caption": caption,
-                                "x_restrict": illust.get("x_restrict", 0)
-                                if isinstance(illust.get("x_restrict"), int)
-                                else 0,
-                                "tags": tags,
-                                "illust_id": int(target_id)
+                        await self._append_cache_item(
+                            user_key(event),
+                            self._build_cache_item(
+                                path=str(gif_path),
+                                caption=caption,
+                                x_restrict=illust.get("x_restrict"),
+                                tags=tags,
+                                illust_id=int(target_id)
                                 if target_id.isdigit()
                                 else None,
-                            }
+                                author_id=user.get("id"),
+                                author_name=str(user.get("name") or ""),
+                                page_count=illust.get("page_count", 1),
+                            ),
                         )
-                        await self._config.save_cache_index()
                     except Exception as exc:
                         logger.warning(
                             "[pixivdirect] Failed to cache ugoira %s: %s",
@@ -578,32 +617,27 @@ class CommandHandler:
 
                         # Cache the first image
                         try:
-                            _user_key = user_key(event)
-                            _user_cache = self._config.random_cache.setdefault(
-                                _user_key, {}
-                            )
-                            _queue = _user_cache.setdefault(DEFAULT_POOL_KEY, [])
                             first_path = await self._image.download_image_to_cache(
                                 all_image_urls[0],
                                 access_token=result.get("access_token"),
                                 refresh_token=latest_refresh_token,
                                 name_prefix=f"illust_{illust.get('id') or target_id}_cache",
                             )
-                            _queue.append(
-                                {
-                                    "path": first_path,
-                                    "caption": caption,
-                                    "x_restrict": illust.get("x_restrict", 0)
-                                    if isinstance(illust.get("x_restrict"), int)
-                                    else 0,
-                                    "tags": tags,
-                                    "illust_id": int(target_id)
+                            await self._append_cache_item(
+                                user_key(event),
+                                self._build_cache_item(
+                                    path=first_path,
+                                    caption=caption,
+                                    x_restrict=illust.get("x_restrict"),
+                                    tags=tags,
+                                    illust_id=int(target_id)
                                     if target_id.isdigit()
                                     else None,
-                                    "page_count": page_count,
-                                }
+                                    author_id=user.get("id"),
+                                    author_name=str(user.get("name") or ""),
+                                    page_count=page_count,
+                                ),
                             )
-                            await self._config.save_cache_index()
                         except Exception as exc:
                             logger.warning(
                                 "[pixivdirect] Failed to cache illust %s: %s",
@@ -674,27 +708,22 @@ class CommandHandler:
 
                         # Cache the first image
                         try:
-                            _user_key = user_key(event)
-                            _user_cache = self._config.random_cache.setdefault(
-                                _user_key, {}
-                            )
-                            _queue = _user_cache.setdefault(DEFAULT_POOL_KEY, [])
                             if local_paths:
-                                _queue.append(
-                                    {
-                                        "path": local_paths[0],
-                                        "caption": caption,
-                                        "x_restrict": illust.get("x_restrict", 0)
-                                        if isinstance(illust.get("x_restrict"), int)
-                                        else 0,
-                                        "tags": tags,
-                                        "illust_id": int(target_id)
+                                await self._append_cache_item(
+                                    user_key(event),
+                                    self._build_cache_item(
+                                        path=local_paths[0],
+                                        caption=caption,
+                                        x_restrict=illust.get("x_restrict"),
+                                        tags=tags,
+                                        illust_id=int(target_id)
                                         if target_id.isdigit()
                                         else None,
-                                        "page_count": page_count,
-                                    }
+                                        author_id=user.get("id"),
+                                        author_name=str(user.get("name") or ""),
+                                        page_count=page_count,
+                                    ),
                                 )
-                                await self._config.save_cache_index()
                         except Exception as exc:
                             logger.warning(
                                 "[pixivdirect] Failed to cache illust %s: %s",
@@ -745,20 +774,19 @@ class CommandHandler:
             logger.info("[pixivdirect] Processing share command")
             key = user_key(event)
             if len(args) >= 3:
-                value = args[2].lower()
-                if value in ("true", "1", "yes", "on"):
+                enabled = self._parse_bool_value(args[2])
+                if enabled is True:
                     self._config.share_enabled[key] = True
                     await self._config.save_share_config()
                     yield event.plain_result("✅ 已开启收藏分享功能。")
                     return
-                elif value in ("false", "0", "no", "off"):
+                if enabled is False:
                     self._config.share_enabled[key] = False
                     await self._config.save_share_config()
                     yield event.plain_result("✅ 已关闭收藏分享功能。")
                     return
-                else:
-                    yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
-                    return
+                yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
+                return
             else:
                 enabled = self._config.share_enabled.get(key, False)
                 status = "开启" if enabled else "关闭"
@@ -814,11 +842,10 @@ class CommandHandler:
                     value = setting
                     setting = "display"
 
-                if value not in ("true", "1", "yes", "on", "false", "0", "no", "off"):
+                enabled = self._parse_bool_value(value)
+                if enabled is None:
                     yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
                     return
-
-                enabled = value in ("true", "1", "yes", "on")
                 if setting == "display":
                     self._config.r18_in_group[group_id_str] = enabled
                     await self._config.save_r18_config()
@@ -876,24 +903,23 @@ class CommandHandler:
                 if not event.is_admin():
                     yield event.plain_result("❌ 仅 AstrBot 管理员可修改唯一随机设置。")
                     return
-                value = args[2].lower()
-                if value in ("true", "1", "yes", "on"):
+                enabled = self._parse_bool_value(args[2])
+                if enabled is True:
                     self._config.random_unique[user_id] = "true"
                     await self._config.save_unique_config()
                     yield event.plain_result(
                         "✅ 已开启唯一随机模式（图片发送后将从缓存池移除）。"
                     )
                     return
-                elif value in ("false", "0", "no", "off"):
+                if enabled is False:
                     self._config.random_unique[user_id] = "false"
                     await self._config.save_unique_config()
                     yield event.plain_result(
                         "✅ 已关闭唯一随机模式（图片发送后保留在缓存池中）。"
                     )
                     return
-                else:
-                    yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
-                    return
+                yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
+                return
             else:
                 status = (
                     "开启"
@@ -1724,13 +1750,19 @@ class CommandHandler:
                 pages_scanned=item.get("pages_scanned"),
             )
             return {
-                "path": local_path,
-                "caption": caption,
-                "x_restrict": item.get("x_restrict", 0),
-                "tags": item.get("tags", []),
-                "illust_id": item.get("illust_id"),
-                "author_id": item.get("author_id"),
-                "author_name": item.get("author_name"),
+                **self._build_cache_item(
+                    path=local_path,
+                    caption=caption,
+                    x_restrict=item.get("x_restrict", 0),
+                    tags=item.get("tags", []),
+                    illust_id=item.get("illust_id"),
+                    author_id=item.get("author_id"),
+                    author_name=str(item.get("author_name") or ""),
+                    page_count=item.get("page_count", 1),
+                ),
+                "title": str(item.get("title") or "（无标题）"),
+                "total_view": item.get("total_view"),
+                "total_bookmarks": item.get("total_bookmarks"),
             }
 
         built_items = await asyncio.gather(
