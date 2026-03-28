@@ -408,29 +408,11 @@ def _pixiv_client_time() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
-def _pick_illust_image_url(illust: dict[str, Any]) -> str | None:
-    meta_single = illust.get("meta_single_page")
-    if isinstance(meta_single, dict):
-        original = meta_single.get("original_image_url")
-        if isinstance(original, str) and original:
-            return original
-    meta_pages = illust.get("meta_pages")
-    if isinstance(meta_pages, list) and meta_pages:
-        first = meta_pages[0]
-        if isinstance(first, dict):
-            image_urls = first.get("image_urls")
-            if isinstance(image_urls, dict):
-                for key in ("original", "large", "medium", "square_medium"):
-                    url = image_urls.get(key)
-                    if isinstance(url, str) and url:
-                        return url
-    image_urls = illust.get("image_urls")
-    if isinstance(image_urls, dict):
-        for key in ("large", "medium", "square_medium"):
-            url = image_urls.get(key)
-            if isinstance(url, str) and url:
-                return url
-    return None
+def _pick_illust_image_url(
+    illust: dict[str, Any], quality: str = "original"
+) -> str | None:
+    urls = _pick_illust_image_urls(illust, quality)
+    return urls[0] if urls else None
 
 
 def _pick_illust_image_urls(
@@ -1137,7 +1119,9 @@ def pixiv(
                     "name": sampled_user.get("name"),
                 },
                 "tags": tags,
-                "image_url": _pick_illust_image_url(sampled),
+                "image_url": _pick_illust_image_url(
+                    sampled, str(params.get("quality", "original"))
+                ),
                 "illust": sampled,
                 "matched_count": matched,
                 "pages_scanned": pages,

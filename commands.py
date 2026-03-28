@@ -138,6 +138,12 @@ class CommandHandler:
             return False
         return True
 
+    def _get_quality_for_event(self, event: AstrMessageEvent) -> str:
+        """Get image quality setting for the current event context."""
+        group_id = event.get_group_id()
+        entity_key = f"group:{group_id}" if group_id else f"user:{user_key(event)}"
+        return self._config.get_image_quality(entity_key)
+
     async def handle_login(self, event: AstrMessageEvent, args: list[str]):
         """Handle login command."""
         if len(args) < 2:
@@ -1124,6 +1130,7 @@ class CommandHandler:
                     refresh_token=target_user_token,
                     filter_params=filter_params.copy(),
                     count=warmup,
+                    quality=self._get_quality_for_event(event),
                 )
                 if latest_refresh_token != target_user_token:
                     self._config.token_map[target_user_key] = latest_refresh_token
@@ -1213,6 +1220,7 @@ class CommandHandler:
             refresh_token=user_token,
             filter_params=filter_params,
             count=warmup,
+            quality=self._get_quality_for_event(event),
         )
         if latest_refresh_token != user_token:
             await self.set_user_token(event, latest_refresh_token)
@@ -1281,6 +1289,7 @@ class CommandHandler:
         exclude_sent: bool = False,
         extended_scan: bool = False,
         thorough_random: bool = False,
+        quality: str = "original",
     ) -> tuple[str, str | None]:
         """Enqueue random bookmark items to cache."""
         latest_refresh_token = refresh_token
@@ -1302,6 +1311,7 @@ class CommandHandler:
                 call_params["extended_scan"] = True
             if thorough_random:
                 call_params["random"] = True
+            call_params["quality"] = quality
 
             random_result = await self._pixiv_call(
                 "random_bookmark_image",
@@ -1551,7 +1561,9 @@ class CommandHandler:
             try:
                 from .pixivSDK import _pick_illust_image_url
 
-                image_url = _pick_illust_image_url(first_illust)
+                image_url = _pick_illust_image_url(
+                    first_illust, self._get_quality_for_event(event)
+                )
                 if image_url:
                     local_path = await self._image.download_image_to_cache(
                         image_url,

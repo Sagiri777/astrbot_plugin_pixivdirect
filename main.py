@@ -282,6 +282,7 @@ class PixivDirectPlugin(Star):
             refresh_token=refresh_token,
             filter_params=filter_params,
             count=items_to_add,
+            quality="original",
         )
 
         if error:
