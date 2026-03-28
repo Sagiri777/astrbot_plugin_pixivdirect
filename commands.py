@@ -196,6 +196,65 @@ class CommandHandler:
         yield event.plain_result(plain_message)
 
     @staticmethod
+    def _parse_warmup_count(filter_params: dict[str, Any]) -> int:
+        raw_warmup = filter_params.pop("warmup", None)
+        if raw_warmup is None:
+            return 2
+        try:
+            return max(1, min(MAX_RANDOM_WARMUP, int(str(raw_warmup))))
+        except ValueError:
+            return 2
+
+    def _resolve_shared_target(
+        self,
+        event: AstrMessageEvent,
+        args: list[str],
+    ) -> tuple[str | None, list[str], str | None]:
+        from astrbot.api.message_components import At
+
+        target_user_key: str | None = None
+        target_user_name: str | None = None
+        remaining_args: list[str] = []
+
+        at_component = next(
+            (
+                comp
+                for comp in event.get_messages()
+                if isinstance(comp, At) and comp.qq != "all"
+            ),
+            None,
+        )
+
+        if at_component:
+            at_qq = str(at_component.qq)
+            at_user_key = f"{event.get_platform_id()}:{at_qq}"
+            if at_user_key not in self._config.token_map:
+                return None, [], f"❌ 未找到用户：{at_qq}"
+
+            target_user_key = at_user_key
+            target_user_name = getattr(at_component, "name", None) or at_qq
+            if not self._config.share_enabled.get(target_user_key, False):
+                return (
+                    None,
+                    [],
+                    f"❌ 用户 {target_user_name} 未开启收藏分享功能。",
+                )
+
+            remaining_args = [token for token in args[1:] if not token.startswith("@")]
+            return target_user_key, remaining_args, None
+
+        for token in args[1:]:
+            if token.startswith("@"):
+                target_user_name = token[1:]
+                target_user_key = self.find_user_by_name(target_user_name)
+                if not target_user_key:
+                    return None, [], f"❌ 未找到用户：{target_user_name}"
+            else:
+                remaining_args.append(token)
+
+        return target_user_key, remaining_args, None
+
+    @staticmethod
     def _normalize_group_block_tag(raw_tag: str) -> str:
         tag = raw_tag.strip()
         if "=" in tag:
@@ -1371,57 +1430,12 @@ class CommandHandler:
                 )
                 return
 
-        # Parse @username and filter params
-        # Detect QQ @mention via At component - if present, skip all @ tokens in text
-        from astrbot.api.message_components import At
-
-        target_user_key = None
-        target_user_name = None
-        remaining_args = []
-
-        # Check for At component first
-        at_component = None
-        for comp in event.get_messages():
-            if isinstance(comp, At) and comp.qq != "all":
-                at_component = comp
-                break
-
-        if at_component:
-            # Extract QQ number from At component
-            at_qq = str(at_component.qq)
-            platform = event.get_platform_id()
-            at_user_key = f"{platform}:{at_qq}"
-
-            # Check if this user exists in token_map
-            if at_user_key in self._config.token_map:
-                target_user_key = at_user_key
-                target_user_name = getattr(at_component, "name", None) or at_qq
-
-                # Check if user has enabled sharing
-                if not self._config.share_enabled.get(target_user_key, False):
-                    yield event.plain_result(
-                        f"❌ 用户 {target_user_name} 未开启收藏分享功能。"
-                    )
-                    return
-            else:
-                yield event.plain_result(f"❌ 未找到用户：{at_qq}")
-                return
-
-            # Skip @ tokens in text since we're using At component
-            for token in args[1:]:
-                if not token.startswith("@"):
-                    remaining_args.append(token)
-        else:
-            # No At component, process @ tokens as pixiv username lookup
-            for token in args[1:]:
-                if token.startswith("@"):
-                    target_user_name = token[1:]
-                    target_user_key = self.find_user_by_name(target_user_name)
-                    if not target_user_key:
-                        yield event.plain_result(f"❌ 未找到用户：{target_user_name}")
-                        return
-                else:
-                    remaining_args.append(token)
+        target_user_key, remaining_args, target_error = self._resolve_shared_target(
+            event, args
+        )
+        if target_error:
+            yield event.plain_result(target_error)
+            return
 
         filter_params, filter_summary = self._cache.parse_random_filter(
             remaining_args, self._get_max_random_pages()
@@ -1459,13 +1473,7 @@ class CommandHandler:
                     yield event.plain_result("❌ 该用户未登录 Pixiv。")
                     return
 
-                warmup = 2
-                raw_warmup = filter_params.pop("warmup", None)
-                if raw_warmup is not None:
-                    try:
-                        warmup = max(1, min(MAX_RANDOM_WARMUP, int(str(raw_warmup))))
-                    except ValueError:
-                        warmup = 2
+                warmup = self._parse_warmup_count(filter_params)
 
                 await self._emoji.add_emoji_reaction(event, "random")
                 latest_refresh_token, error = await self._enqueue_random_items(
@@ -1548,13 +1556,7 @@ class CommandHandler:
             return
 
         # Cache empty, fetch new data
-        warmup = 2
-        raw_warmup = filter_params.pop("warmup", None)
-        if raw_warmup is not None:
-            try:
-                warmup = max(1, min(MAX_RANDOM_WARMUP, int(str(raw_warmup))))
-            except ValueError:
-                warmup = 2
+        warmup = self._parse_warmup_count(filter_params)
 
         await self._emoji.add_emoji_reaction(event, "random")
         latest_refresh_token, error = await self._enqueue_random_items(

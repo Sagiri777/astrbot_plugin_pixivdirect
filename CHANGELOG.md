@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.8.6] - 2026-03-29
+
+### Changed
+- 抽取 `commands.py` 中共享目标解析与 `warmup` 参数解析逻辑，减少随机收藏分支内的重复代码
+
+### Fixed
+- 统一 `@用户` 文本和 QQ `At` 组件的共享目标解析入口，避免后续修改时两套逻辑漂移
+
 ## [1.8.5] - 2026-03-29
 
 ### Changed
