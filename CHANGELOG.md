@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.8.11] - 2026-03-29
+
+### Changed
+- 重写 `/pixiv help` 帮助菜单，按基础、搜索、随机收藏、常用设置、管理分组展示
+- 补充 `dns`、`share`、`quality`、`unique`、`r18` 等子命令的定向用法提示
+
+## [1.8.10] - 2026-03-29
+
+### Changed
+- 为 `login`、`id`、`search`、`searchuser`、`random`、`cache`、`groupblock`、`config` 增加更明确的定向用法提示
+
+### Fixed
+- 修复子命令后仅输入空格但未提供参数时，仍可能继续走正常命令处理的问题
+
 ## [1.8.9] - 2026-03-29
 
 ### Added

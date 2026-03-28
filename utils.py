@@ -258,29 +258,207 @@ def tos_notice() -> str:
     )
 
 
+HELP_MENU: list[dict[str, Any]] = [
+    {
+        "section": "基础",
+        "items": [
+            {"command": "/pixiv help", "description": "查看完整帮助菜单"},
+            {
+                "command": "/pixiv login {refresh_token}",
+                "description": "绑定 Pixiv 账号，后续命令默认使用该账号访问",
+                "usage_key": "login",
+            },
+            {
+                "command": "/pixiv id i {illust_id}",
+                "description": "查看单个作品详情，支持多图与动图",
+                "usage_key": "id",
+            },
+            {
+                "command": "/pixiv id a {artist_id}",
+                "description": "查看作者详情与作品统计",
+                "usage_key": "id",
+            },
+        ],
+    },
+    {
+        "section": "搜索",
+        "items": [
+            {
+                "command": "/pixiv search {关键词} [选项]",
+                "description": "搜索插画，可附带排序、时间范围、页码等参数",
+                "usage_key": "search",
+            },
+            {
+                "command": "/pixiv searchuser {关键词} [选项]",
+                "description": "搜索作者，可附带排序、页码、数量等参数",
+                "usage_key": "searchuser",
+            },
+            {
+                "command": "插画选项：sort=date_desc target=partial_match_for_tags duration=within_last_week translate=true page=1 limit=10",
+                "description": "插画搜索的常见可选参数",
+            },
+            {
+                "command": "作者选项：sort=date_desc page=1 limit=10",
+                "description": "作者搜索的常见可选参数",
+            },
+        ],
+    },
+    {
+        "section": "随机收藏",
+        "items": [
+            {
+                "command": "/pixiv random",
+                "description": "随机获取自己收藏中的图片，作品多图时会自动接入多图发送逻辑",
+                "usage_key": "random",
+            },
+            {
+                "command": "/pixiv random tag=风景",
+                "description": "按标签、作者、页数等条件筛选自己的收藏",
+                "usage_key": "random",
+            },
+            {
+                "command": "/pixiv random @{用户} [筛选条件]",
+                "description": "在对方开启分享时查看对方的收藏随机图",
+                "usage_key": "random",
+            },
+            {
+                "command": "筛选参数：tag=xxx author=xxx author_id=123 restrict=public|private max_pages=3 warmup=2 random=true",
+                "description": "随机收藏支持的筛选参数",
+            },
+        ],
+    },
+    {
+        "section": "常用设置",
+        "items": [
+            {
+                "command": "/pixiv share true/false",
+                "description": "开启或关闭自己的收藏分享",
+                "usage_key": "share",
+            },
+            {
+                "command": "/pixiv quality original/medium/small",
+                "description": "设置后续下载图片的质量档位",
+                "usage_key": "quality",
+            },
+            {
+                "command": "/pixiv unique true/false",
+                "description": "开启后尽量避免重复发送同一作品",
+                "usage_key": "unique",
+            },
+            {
+                "command": "/pixiv r18 true/false",
+                "description": "设置群聊中是否允许直接发送 R-18 图片",
+                "usage_key": "r18",
+            },
+            {
+                "command": "/pixiv r18 tag true/false",
+                "description": "设置群聊中是否显示 R-18 标签提示",
+                "usage_key": "r18",
+            },
+            {
+                "command": "/pixiv r18 mosaic true/false",
+                "description": "设置群聊 R-18 图片是否自动打码",
+                "usage_key": "r18",
+            },
+        ],
+    },
+    {
+        "section": "管理",
+        "items": [
+            {
+                "command": "/pixiv cache add/list/clear/now/nowall/schedule [筛选条件|N]",
+                "description": "管理闲时缓存任务与手动补货",
+                "usage_key": "cache",
+            },
+            {
+                "command": "/pixiv groupblock add/remove/list/clear tag=xxx",
+                "description": "管理群聊屏蔽标签，命中后随机图不会直接发送",
+                "usage_key": "groupblock",
+            },
+            {
+                "command": "/pixiv dns",
+                "description": "查看当前 DNS 刷新状态",
+                "usage_key": "dns",
+            },
+            {
+                "command": "/pixiv dns refresh",
+                "description": "手动触发一次 DNS 刷新",
+                "usage_key": "dns",
+            },
+            {
+                "command": "/pixiv config list/get/set/reset [key] [value]",
+                "description": "查看或修改插件运行配置项",
+                "usage_key": "config",
+            },
+        ],
+    },
+]
+
+
 def help_text() -> str:
     """Return the help text for the plugin."""
-    return (
-        "📖 Pixiv 指令：\n"
-        "- /pixiv login {refresh_token}  # 登录 Pixiv\n"
-        "- /pixiv id i {illust_id}  # 查看作品详情\n"
-        "- /pixiv id a {artist_id}  # 查看作者详情\n"
-        "- /pixiv search {关键词} [选项]  # 搜索插画\n"
-        "- /pixiv searchuser {关键词} [选项]  # 搜索作者\n"
-        "- /pixiv random [筛选条件]  # 随机获取收藏\n"
-        "- /pixiv random @{用户} [筛选条件]  # 查看他人收藏（需对方开启分享）\n"
-        "- /pixiv random share true/false  # 开启/关闭收藏分享\n"
-        "- /pixiv random r18 true/false  # 管理员：开启/关闭群聊 R-18\n"
-        "- /pixiv random r18 tag true/false  # 管理员：设置群聊 R-18 标签是否显示\n"
-        "- /pixiv random r18 mosaic true/false  # 管理员：设置群聊 R-18 图片是否自动打码\n"
-        "- /pixiv random unique true/false  # 管理员：开启/关闭唯一随机模式\n"
-        "- /pixiv random quality original/medium/small  # 管理员：设置图片质量\n"
-        "- /pixiv groupblock add/remove/list/clear tag=xxx  # 管理员：群聊屏蔽标签\n"
-        "- /pixiv random cache add/list/clear/now/nowall/schedule [筛选条件|N]  # 闲时缓存管理\n"
-        "- /pixiv dns  # 查看 DNS 刷新状态\n"
-        "- /pixiv dns refresh  # 管理员：手动刷新 DNS\n"
-        "- /pixiv config list/get/set/reset [key] [value]  # 管理员：配置管理\n"
-        "\n💡 搜索插画选项：sort=date_desc target=partial_match_for_tags duration=within_last_week translate=true page=1 limit=10\n"
-        "💡 搜索作者选项：sort=date_desc page=1 limit=10\n"
-        "💡 筛选条件：tag=xxx author=xxx author_id=123 restrict=public|private max_pages=3 warmup=2 random=true"
+    lines = ["📖 PixivDirect 帮助"]
+    for section in HELP_MENU:
+        lines.append(f"\n【{section['section']}】")
+        for item in section["items"]:
+            lines.append(f"- {item['command']}  # {item['description']}")
+    lines.append(
+        "\n💡 顶级别名：/pixiv share、/pixiv quality、/pixiv cache、/pixiv dns、/pixiv config、/pixiv groupblock"
     )
+    return "\n".join(lines)
+
+
+def command_usage(command: str) -> str | None:
+    """Return targeted usage text for a specific subcommand."""
+    section = next(
+        (
+            current
+            for current in HELP_MENU
+            if any(item.get("usage_key") == command for item in current["items"])
+        ),
+        None,
+    )
+    if section is None:
+        return None
+
+    lines = [f"📋 /pixiv {command} 用法："]
+    descriptions: list[str] = []
+    for item in section["items"]:
+        if item.get("usage_key") != command:
+            continue
+        lines.append(f"- {item['command']}  # {item['description']}")
+        descriptions.append(str(item["description"]))
+
+    if command == "id":
+        lines.append("说明：`i` 查询作品，`a` 查询作者。")
+    elif command == "random":
+        lines.append("- /pixiv random share true/false  # 开启或关闭收藏分享")
+        lines.append(
+            "- /pixiv random quality original/medium/small  # 设置随机图下载质量"
+        )
+        lines.append(
+            "- /pixiv random cache add/list/clear/now/nowall/schedule  # 管理随机缓存"
+        )
+    elif command == "cache":
+        lines.append("- /pixiv cache add tag=xxx count=N|always  # 添加缓存任务")
+        lines.append("- /pixiv cache list  # 查看缓存任务")
+        lines.append("- /pixiv cache clear  # 清空缓存任务")
+        lines.append("- /pixiv cache now N  # 立即补货 N 张")
+        lines.append("- /pixiv cache nowall  # 立即执行所有缓存任务")
+        lines.append("- /pixiv cache schedule  # 查看缓存调度")
+    elif command == "dns":
+        lines.append("说明：查看状态或手动刷新 DNS。")
+    elif command == "groupblock":
+        lines.append("- /pixiv groupblock add tag=xxx  # 添加屏蔽标签")
+        lines.append("- /pixiv groupblock remove tag=xxx  # 删除屏蔽标签")
+        lines.append("- /pixiv groupblock list  # 查看当前屏蔽标签")
+        lines.append("- /pixiv groupblock clear  # 清空屏蔽标签")
+    elif command == "config":
+        lines.append("- /pixiv config list  # 查看全部配置")
+        lines.append("- /pixiv config get <key>  # 查看单个配置")
+        lines.append("- /pixiv config set <key> <value>  # 修改配置")
+        lines.append("- /pixiv config reset [key]  # 重置配置")
+    elif descriptions:
+        lines.append(f"说明：{descriptions[0]}")
+
+    return "\n".join(lines)

@@ -25,10 +25,10 @@ from .constants import (
 from .emoji_reaction import EmojiReactionHandler
 from .image_handler import ImageHandler
 from .pixivSDK import pixiv
-from .utils import help_text
+from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.8.9")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.8.11")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -374,9 +374,14 @@ class PixivDirectPlugin(Star):
         # Remove command prefix "/pixiv " or "pixiv "
         command_match = re.match(r"^/?pixiv\s*(.*)", full_message, re.IGNORECASE)
         if command_match:
-            remaining_args = command_match.group(1).strip()
+            raw_remaining_args = command_match.group(1)
         else:
-            remaining_args = args_str
+            raw_remaining_args = args_str
+
+        had_trailing_space_only = bool(raw_remaining_args) and (
+            raw_remaining_args != raw_remaining_args.rstrip()
+        )
+        remaining_args = raw_remaining_args.strip()
 
         limited = await self._command_handler.rate_limit_message(event)
         if limited:
@@ -389,6 +394,12 @@ class PixivDirectPlugin(Star):
         )
         sub_cmd = tokens[0].lower() if tokens else "help"
         logger.info(f"[pixivdirect] tokens: {tokens}, sub_cmd: {sub_cmd}")
+
+        if had_trailing_space_only and len(tokens) == 1:
+            usage = command_usage(sub_cmd)
+            if usage:
+                yield event.plain_result(usage)
+                return
 
         if sub_cmd == "help":
             await self._emoji_handler.add_emoji_reaction(event, "help")
