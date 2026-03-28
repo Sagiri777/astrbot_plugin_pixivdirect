@@ -15,16 +15,23 @@ class CacheManager:
     def __init__(self, config_manager: ConfigManager) -> None:
         self._config = config_manager
 
+    @staticmethod
+    def _has_live_path(item: dict[str, Any]) -> bool:
+        path = item.get("path")
+        return isinstance(path, str) and bool(path) and Path(path).exists()
+
     def find_cached_by_illust_id(self, illust_id: int) -> dict[str, Any] | None:
         """Find a cached item by illust_id across all user pools."""
         for user_cache in self._config.random_cache.values():
             pool = user_cache.get(DEFAULT_POOL_KEY, [])
             for item in pool:
                 item_id = item.get("illust_id")
-                if isinstance(item_id, int) and item_id == illust_id:
-                    path = item.get("path")
-                    if isinstance(path, str) and path and Path(path).exists():
-                        return item
+                if (
+                    isinstance(item_id, int)
+                    and item_id == illust_id
+                    and self._has_live_path(item)
+                ):
+                    return item
         return None
 
     async def pop_cached_item(
@@ -59,10 +66,7 @@ class CacheManager:
                     if unique_enabled:
                         # Original behavior: return first matching item and remove it
                         for i, item in enumerate(pool):
-                            path = item.get("path")
-                            if not (
-                                isinstance(path, str) and path and Path(path).exists()
-                            ):
+                            if not self._has_live_path(item):
                                 continue
                             # Skip already sent items
                             illust_id = item.get("illust_id")
@@ -79,10 +83,7 @@ class CacheManager:
                         # Random selection: collect all matching items and pick one randomly
                         matching_items = []
                         for item in pool:
-                            path = item.get("path")
-                            if not (
-                                isinstance(path, str) and path and Path(path).exists()
-                            ):
+                            if not self._has_live_path(item):
                                 continue
                             # Skip already sent items
                             illust_id = item.get("illust_id")
@@ -104,8 +105,7 @@ class CacheManager:
                     # Original behavior: pop from front
                     while queue:
                         item = queue.pop(0)
-                        path = item.get("path")
-                        if isinstance(path, str) and path and Path(path).exists():
+                        if self._has_live_path(item):
                             # Skip already sent items
                             illust_id = item.get("illust_id")
                             if (
@@ -120,9 +120,7 @@ class CacheManager:
                     valid_items = [
                         item
                         for item in queue
-                        if isinstance(item.get("path"), str)
-                        and item.get("path")
-                        and Path(item.get("path")).exists()
+                        if self._has_live_path(item)
                         and not (
                             exclude_sent
                             and isinstance(item.get("illust_id"), int)
@@ -142,8 +140,7 @@ class CacheManager:
 
         count = 0
         for item in pool:
-            path = item.get("path")
-            if not (isinstance(path, str) and path and Path(path).exists()):
+            if not self._has_live_path(item):
                 continue
             if filter_params and not self._item_matches_filter(item, filter_params):
                 continue
