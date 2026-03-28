@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.8.7] - 2026-03-29
+
+### Changed
+- 抽取 `commands.py` 中随机缓存补货与缓存取回的公共 helper，进一步压缩共享/自身两条随机流程的重复代码
+
+### Fixed
+- 统一随机补货调用参数构造，降低共享随机和自用随机后续调整时出现分支不一致的风险
+
 ## [1.8.6] - 2026-03-29
 
 ### Changed

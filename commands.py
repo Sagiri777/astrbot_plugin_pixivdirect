@@ -195,6 +195,44 @@ class CommandHandler:
             plain_message += "\n⚠️ R-18 内容在群聊中仅显示信息"
         yield event.plain_result(plain_message)
 
+    async def _pop_random_cached_item(
+        self,
+        user_id: str,
+        cache_key: str,
+        filter_params: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        unique_enabled = self._config.is_unique_enabled_for_user(user_id)
+        return await self._cache.pop_cached_item(
+            user_id,
+            cache_key,
+            filter_params,
+            exclude_sent=unique_enabled,
+        )
+
+    async def _fill_random_cache(
+        self,
+        *,
+        user_id: str,
+        refresh_token: str,
+        cache_key: str,
+        filter_params: dict[str, Any],
+        count: int,
+        thorough_random: bool,
+        quality: str,
+    ) -> tuple[str, str | None]:
+        unique_enabled = self._config.is_unique_enabled_for_user(user_id)
+        return await self._enqueue_random_items(
+            user_key=user_id,
+            cache_key=cache_key,
+            refresh_token=refresh_token,
+            filter_params=filter_params.copy(),
+            count=count,
+            exclude_sent=unique_enabled,
+            extended_scan=unique_enabled,
+            thorough_random=thorough_random,
+            quality=quality,
+        )
+
     @staticmethod
     def _parse_warmup_count(filter_params: dict[str, Any]) -> int:
         raw_warmup = filter_params.pop("warmup", None)
@@ -1450,11 +1488,8 @@ class CommandHandler:
 
         # @someone mode - read from target user cache
         if target_user_key:
-            cached_item = await self._cache.pop_cached_item(
-                target_user_key,
-                cache_key,
-                filter_params,
-                exclude_sent=self._config.is_unique_enabled_for_user(target_user_key),
+            cached_item = await self._pop_random_cached_item(
+                target_user_key, cache_key, filter_params
             )
             if cached_item:
                 await self._emoji.add_emoji_reaction(event, "random")
@@ -1476,18 +1511,12 @@ class CommandHandler:
                 warmup = self._parse_warmup_count(filter_params)
 
                 await self._emoji.add_emoji_reaction(event, "random")
-                latest_refresh_token, error = await self._enqueue_random_items(
-                    user_key=target_user_key,
-                    cache_key=cache_key,
+                latest_refresh_token, error = await self._fill_random_cache(
+                    user_id=target_user_key,
                     refresh_token=target_user_token,
-                    filter_params=filter_params.copy(),
+                    cache_key=cache_key,
+                    filter_params=filter_params,
                     count=warmup,
-                    exclude_sent=self._config.is_unique_enabled_for_user(
-                        target_user_key
-                    ),
-                    extended_scan=self._config.is_unique_enabled_for_user(
-                        target_user_key
-                    ),
                     thorough_random=thorough_random,
                     quality=self._get_quality_for_event(event),
                 )
@@ -1501,13 +1530,10 @@ class CommandHandler:
                     return
 
                 # Try to get item from cache again
-                cached_item = await self._cache.pop_cached_item(
+                cached_item = await self._pop_random_cached_item(
                     target_user_key,
                     cache_key,
                     filter_params,
-                    exclude_sent=self._config.is_unique_enabled_for_user(
-                        target_user_key
-                    ),
                 )
                 if not cached_item:
                     yield event.plain_result("❌ 未找到可发送的缓存图片。")
@@ -1533,13 +1559,7 @@ class CommandHandler:
         key = user_key(event)
 
         # Try cache first
-        unique_enabled = self._config.is_unique_enabled_for_user(key)
-        cached_item = await self._cache.pop_cached_item(
-            key,
-            cache_key,
-            filter_params,
-            exclude_sent=unique_enabled,
-        )
+        cached_item = await self._pop_random_cached_item(key, cache_key, filter_params)
         if cached_item:
             sent_ids_changed = self._mark_sent_illust_if_needed(key, cached_item)
             if sent_ids_changed:
@@ -1559,14 +1579,12 @@ class CommandHandler:
         warmup = self._parse_warmup_count(filter_params)
 
         await self._emoji.add_emoji_reaction(event, "random")
-        latest_refresh_token, error = await self._enqueue_random_items(
-            user_key=key,
-            cache_key=cache_key,
+        latest_refresh_token, error = await self._fill_random_cache(
+            user_id=key,
             refresh_token=user_token,
+            cache_key=cache_key,
             filter_params=filter_params,
             count=warmup,
-            exclude_sent=unique_enabled,
-            extended_scan=unique_enabled,
             thorough_random=thorough_random,
             quality=self._get_quality_for_event(event),
         )
@@ -1594,12 +1612,7 @@ class CommandHandler:
             yield event.plain_result(error_msg)
             return
 
-        picked = await self._cache.pop_cached_item(
-            key,
-            cache_key,
-            filter_params,
-            exclude_sent=unique_enabled,
-        )
+        picked = await self._pop_random_cached_item(key, cache_key, filter_params)
         if not picked:
             yield event.plain_result("❌ 未找到可发送的缓存图片。")
             return
