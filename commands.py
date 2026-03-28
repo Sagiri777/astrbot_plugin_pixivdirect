@@ -141,6 +141,61 @@ class CommandHandler:
         await self._config.save_cache_index()
 
     @staticmethod
+    def _has_active_filter(filter_params: dict[str, Any]) -> bool:
+        return bool(
+            filter_params.get("tag")
+            or filter_params.get("author")
+            or filter_params.get("author_id")
+        )
+
+    def _build_remaining_cache_text(
+        self,
+        user_id: str,
+        filter_params: dict[str, Any],
+    ) -> str:
+        remain_total = len(
+            self._config.random_cache.get(user_id, {}).get(DEFAULT_POOL_KEY, [])
+        )
+        remain_matching = self._cache.count_matching_items(user_id, filter_params)
+        if self._has_active_filter(filter_params):
+            return f"{remain_total}张 (匹配当前筛选: {remain_matching}张)"
+        return f"{remain_total}张 (全部)"
+
+    async def _emit_random_item(
+        self,
+        event: AstrMessageEvent,
+        item: dict[str, Any],
+        *,
+        fallback_caption: str,
+        source_label: str,
+        filter_summary: str | None = None,
+        remain_text: str | None = None,
+    ):
+        caption = item.get("caption") or fallback_caption
+        lines = [caption, f"- 来源: {source_label}"]
+        if remain_text:
+            lines.append(f"- 剩余缓存: {remain_text}")
+        if filter_summary:
+            lines.append(f"- 筛选条件: {filter_summary}")
+        message = "\n".join(lines)
+
+        path = item.get("path")
+        if path and self.should_send_image(event, item):
+            for result in await self._build_text_image_results(
+                event,
+                message,
+                path,
+                item,
+            ):
+                yield result
+            return
+
+        plain_message = self._format_caption_for_event(event, message, item)
+        if self._cache.is_r18_item(item):
+            plain_message += "\n⚠️ R-18 内容在群聊中仅显示信息"
+        yield event.plain_result(plain_message)
+
+    @staticmethod
     def _normalize_group_block_tag(raw_tag: str) -> str:
         tag = raw_tag.strip()
         if "=" in tag:
@@ -1389,25 +1444,13 @@ class CommandHandler:
             )
             if cached_item:
                 await self._emoji.add_emoji_reaction(event, "random")
-                caption = cached_item.get("caption") or "Pixiv 随机收藏（缓存）"
-                path = cached_item.get("path")
-                if path and self.should_send_image(event, cached_item):
-                    for result in await self._build_text_image_results(
-                        event,
-                        f"{caption}\n- 来源: 缓存（共享）",
-                        path,
-                        cached_item,
-                    ):
-                        yield result
-                else:
-                    msg = self._format_caption_for_event(
-                        event,
-                        f"{caption}\n- 来源: 缓存（共享）",
-                        cached_item,
-                    )
-                    if self._cache.is_r18_item(cached_item):
-                        msg += "\n⚠️ R-18 内容在群聊中仅显示信息"
-                    yield event.plain_result(msg)
+                async for result in self._emit_random_item(
+                    event,
+                    cached_item,
+                    fallback_caption="Pixiv 随机收藏（缓存）",
+                    source_label="缓存（共享）",
+                ):
+                    yield result
                 return
             else:
                 # Cache empty, try to fetch new data using target user's token
@@ -1463,25 +1506,13 @@ class CommandHandler:
                     return
 
                 await self._emoji.add_emoji_reaction(event, "random")
-                caption = cached_item.get("caption") or "Pixiv 随机收藏（共享）"
-                path = cached_item.get("path")
-                if path and self.should_send_image(event, cached_item):
-                    for result in await self._build_text_image_results(
-                        event,
-                        f"{caption}\n- 来源: 新获取（共享）",
-                        path,
-                        cached_item,
-                    ):
-                        yield result
-                else:
-                    msg = self._format_caption_for_event(
-                        event,
-                        f"{caption}\n- 来源: 新获取（共享）",
-                        cached_item,
-                    )
-                    if self._cache.is_r18_item(cached_item):
-                        msg += "\n⚠️ R-18 内容在群聊中仅显示信息"
-                    yield event.plain_result(msg)
+                async for result in self._emit_random_item(
+                    event,
+                    cached_item,
+                    fallback_caption="Pixiv 随机收藏（共享）",
+                    source_label="新获取（共享）",
+                ):
+                    yield result
                 return
 
         # Self cache mode - requires token
@@ -1506,36 +1537,14 @@ class CommandHandler:
             if sent_ids_changed:
                 await self._config.save_sent_illust_ids()
             await self._emoji.add_emoji_reaction(event, "random")
-            caption = cached_item.get("caption") or "Pixiv 随机收藏（缓存）"
-            path = cached_item.get("path")
-            remain_total = len(
-                self._config.random_cache.get(key, {}).get(DEFAULT_POOL_KEY, [])
-            )
-            remain_matching = self._cache.count_matching_items(key, filter_params)
-            if (
-                filter_params.get("tag")
-                or filter_params.get("author")
-                or filter_params.get("author_id")
+            async for result in self._emit_random_item(
+                event,
+                cached_item,
+                fallback_caption="Pixiv 随机收藏（缓存）",
+                source_label="缓存",
+                remain_text=self._build_remaining_cache_text(key, filter_params),
             ):
-                remain_text = f"{remain_total}张 (匹配当前筛选: {remain_matching}张)"
-            else:
-                remain_text = f"{remain_total}张 (全部)"
-            if path and self.should_send_image(event, cached_item):
-                for result in await self._build_text_image_results(
-                    event,
-                    f"{caption}\n- 来源: 缓存\n- 剩余缓存: {remain_text}",
-                    path,
-                    cached_item,
-                ):
-                    yield result
-            else:
-                yield event.plain_result(
-                    self._format_caption_for_event(
-                        event,
-                        f"{caption}\n- 来源: 缓存\n- 剩余缓存: {remain_text}\n⚠️ R-18 内容在群聊中仅显示信息",
-                        cached_item,
-                    )
-                )
+                yield result
             return
 
         # Cache empty, fetch new data
@@ -1595,37 +1604,15 @@ class CommandHandler:
         sent_ids_changed = self._mark_sent_illust_if_needed(key, picked)
         if sent_ids_changed:
             await self._config.save_sent_illust_ids()
-
-        caption = picked.get("caption") or "Pixiv 随机收藏"
-        path = picked.get("path")
-        remain_total = len(
-            self._config.random_cache.get(key, {}).get(DEFAULT_POOL_KEY, [])
-        )
-        remain_matching = self._cache.count_matching_items(key, filter_params)
-        if (
-            filter_params.get("tag")
-            or filter_params.get("author")
-            or filter_params.get("author_id")
+        async for result in self._emit_random_item(
+            event,
+            picked,
+            fallback_caption="Pixiv 随机收藏",
+            source_label="新获取",
+            filter_summary=filter_summary,
+            remain_text=self._build_remaining_cache_text(key, filter_params),
         ):
-            remain_text = f"{remain_total}张 (匹配当前筛选: {remain_matching}张)"
-        else:
-            remain_text = f"{remain_total}张 (全部)"
-        if path and self.should_send_image(event, picked):
-            for result in await self._build_text_image_results(
-                event,
-                f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}",
-                path,
-                picked,
-            ):
-                yield result
-        else:
-            yield event.plain_result(
-                self._format_caption_for_event(
-                    event,
-                    f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}\n⚠️ R-18 内容在群聊中仅显示信息",
-                    picked,
-                )
-            )
+            yield result
 
     async def _enqueue_random_items(
         self,

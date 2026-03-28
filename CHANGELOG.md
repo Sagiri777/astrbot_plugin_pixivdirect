@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.8.5] - 2026-03-29
+
+### Changed
+- 抽取 `commands.py` 中随机收藏结果发送与剩余缓存统计的公共逻辑，减少共享/自身、缓存/新获取四条路径的重复代码
+
+### Fixed
+- 优化随机收藏响应分支的维护性，统一 R-18 文本回退与筛选条件展示逻辑
+
 ## [1.8.4] - 2026-03-29
 
 ### Changed

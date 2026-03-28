@@ -2,11 +2,16 @@
 
 PixivDirect 插件，用于直连访问 Pixiv，支持查询作品详情、作者信息和随机获取收藏图片。
 
-当前版本：`v1.8.4`
+当前版本：`v1.8.5`
 
 ## 更新日志
 
 README 中仅保留近期版本摘要，完整历史请见 [CHANGELOG.md](./CHANGELOG.md)。
+
+### v1.8.5
+
+- 优化 `commands.py` 中随机收藏结果发送路径，统一缓存命中/新获取、共享/自身场景下的消息构造逻辑
+- 统一剩余缓存统计与 R-18 文本回退处理
 
 ### v1.8.4
 
@@ -590,7 +595,7 @@ tail -f {astrbot_data_path}/logs/astrbot.log | grep pixivdirect
 ## 开发信息
 
 - **作者**：Sagiri777
-- **版本**：v1.8.4
+- **版本**：v1.8.5
 - **仓库**：https://github.com/Sagiri777/astrbot_plugin_pixivdirect
 - **依赖**：requests, astrbot-api, Pillow
 
