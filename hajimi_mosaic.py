@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from astrbot.api import logger
+
 _SEGMENTATION_MODEL = None
 _HEAD_IMAGE: np.ndarray | None = None
 
@@ -40,6 +42,9 @@ def _load_segmentation_model():
         from ultralytics import YOLO
 
         model_path = _asset_root() / "hajimi_models" / "segmentation_model.pt"
+        logger.info(
+            "[pixivdirect] Loading Hajimi segmentation model from %s", model_path
+        )
         _SEGMENTATION_MODEL = YOLO(str(model_path))
     return _SEGMENTATION_MODEL
 
@@ -51,6 +56,7 @@ def _load_head_image() -> np.ndarray:
         head_image = cv2.imread(str(head_path), cv2.IMREAD_UNCHANGED)
         if head_image is None:
             raise FileNotFoundError(f"Missing hajimi head asset: {head_path}")
+        logger.info("[pixivdirect] Loading Hajimi head asset from %s", head_path)
         _HEAD_IMAGE = _to_rgba(head_image)
     return _HEAD_IMAGE
 
@@ -95,6 +101,12 @@ def _apply_mask(
 
 
 def apply_hajimi_mosaic_to_pil(image: Image.Image) -> Image.Image:
+    logger.info(
+        "[pixivdirect] Hajimi mosaic started for image size=%sx%s mode=%s",
+        image.width,
+        image.height,
+        image.mode,
+    )
     rgb_image = image.convert("RGB")
     image_np = np.array(rgb_image)
     image_bgr = cv2.cvtColor(_to_rgb(image_np), cv2.COLOR_RGB2BGR)
@@ -102,12 +114,17 @@ def apply_hajimi_mosaic_to_pil(image: Image.Image) -> Image.Image:
     segmentation_results = _segment_image(image_bgr)
     result = segmentation_results[0]
     if not hasattr(result, "masks") or result.masks is None:
+        logger.info(
+            "[pixivdirect] Hajimi mosaic skipped: segmentation returned no masks"
+        )
         return image.copy()
 
     masks = result.masks.data.cpu().numpy()
     if len(masks) == 0:
+        logger.info("[pixivdirect] Hajimi mosaic skipped: mask count is 0")
         return image.copy()
 
+    logger.info("[pixivdirect] Hajimi mosaic applying %d masks", len(masks))
     output_bgr = image_bgr.copy()
     head_image = _load_head_image()
     for mask in masks:
@@ -118,5 +135,7 @@ def apply_hajimi_mosaic_to_pil(image: Image.Image) -> Image.Image:
         alpha = image.getchannel("A")
         mosaiced = Image.fromarray(output_rgb).convert("RGBA")
         mosaiced.putalpha(alpha)
+        logger.info("[pixivdirect] Hajimi mosaic finished with RGBA output")
         return mosaiced
+    logger.info("[pixivdirect] Hajimi mosaic finished with RGB output")
     return Image.fromarray(output_rgb)

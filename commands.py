@@ -160,6 +160,11 @@ class CommandHandler:
             return image_path
 
         if not self._config.is_r18_mosaic_enabled_in_group(str(group_id)):
+            logger.info(
+                "[pixivdirect] R-18 image %s in group %s will be sent without mosaic",
+                image_path,
+                group_id,
+            )
             return image_path
 
         try:
@@ -168,6 +173,12 @@ class CommandHandler:
                 f"r18mosaic_{illust_id}"
                 if isinstance(illust_id, int)
                 else "r18mosaic_image"
+            )
+            logger.info(
+                "[pixivdirect] Applying group R-18 mosaic for illust_id=%s group=%s path=%s",
+                illust_id,
+                group_id,
+                image_path,
             )
             return await self._image.create_mosaic_image(
                 image_path,

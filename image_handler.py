@@ -239,6 +239,7 @@ class ImageHandler:
         name_prefix: str,
     ) -> str:
         """Create a mosaiced variant of an image for group-safe delivery."""
+        logger.info("[pixivdirect] Scheduling mosaic generation for %s", image_path)
         return await asyncio.to_thread(
             self._create_mosaic_image_sync,
             image_path,
@@ -264,11 +265,18 @@ class ImageHandler:
         )
         target = self._cache_dir / f"{name_prefix}_{digest}_mosaic{target_suffix}"
         if target.exists():
+            logger.info("[pixivdirect] Reusing existing mosaic cache %s", target)
             return str(target)
 
+        logger.info(
+            "[pixivdirect] Creating new mosaic cache %s from %s", target, source
+        )
         with Image.open(source) as img:
             is_animated = bool(getattr(img, "is_animated", False))
             if is_animated:
+                logger.info(
+                    "[pixivdirect] Source image is animated, rendering mosaic GIF"
+                )
                 self._save_animated_mosaic(img, target)
             else:
                 frame = (
@@ -277,12 +285,14 @@ class ImageHandler:
                 mosaiced = apply_hajimi_mosaic_to_pil(frame)
                 self._save_single_frame(mosaiced, target, target_suffix)
 
+        logger.info("[pixivdirect] Mosaic image saved to %s", target)
         return str(target)
 
     def _save_animated_mosaic(self, image: Image.Image, target: Path) -> None:
         frames: list[Image.Image] = []
         durations: list[int] = []
         loop = int(image.info.get("loop", 0))
+        logger.info("[pixivdirect] Processing animated mosaic with loop=%s", loop)
 
         for frame in ImageSequence.Iterator(image):
             rgba = (
