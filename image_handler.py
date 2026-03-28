@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
 import io
 import re
 import shutil
@@ -11,9 +13,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from PIL import Image
+from PIL import Image, ImageSequence
 
 from astrbot.api import logger
+
+from .hajimi_mosaic import apply_hajimi_mosaic_to_pil
 
 
 class ImageHandler:
@@ -227,6 +231,87 @@ class ImageHandler:
             )
             if result.returncode != 0:
                 raise RuntimeError(f"ffmpeg 渲染动图失败: {result.stderr[:500]}")
+
+    async def create_mosaic_image(
+        self,
+        image_path: str,
+        *,
+        name_prefix: str,
+    ) -> str:
+        """Create a mosaiced variant of an image for group-safe delivery."""
+        return await asyncio.to_thread(
+            self._create_mosaic_image_sync,
+            image_path,
+            name_prefix,
+        )
+
+    def _create_mosaic_image_sync(
+        self,
+        image_path: str,
+        name_prefix: str,
+    ) -> str:
+        source = Path(image_path)
+        if not source.exists():
+            raise FileNotFoundError(f"Image not found: {image_path}")
+
+        stat = source.stat()
+        digest = hashlib.md5(
+            f"{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}".encode()
+        ).hexdigest()[:12]
+        suffix = source.suffix.lower()
+        target_suffix = (
+            suffix if suffix in {".gif", ".jpg", ".jpeg", ".png", ".webp"} else ".png"
+        )
+        target = self._cache_dir / f"{name_prefix}_{digest}_mosaic{target_suffix}"
+        if target.exists():
+            return str(target)
+
+        with Image.open(source) as img:
+            is_animated = bool(getattr(img, "is_animated", False))
+            if is_animated:
+                self._save_animated_mosaic(img, target)
+            else:
+                frame = (
+                    img.convert("RGBA") if img.mode == "RGBA" else img.convert("RGB")
+                )
+                mosaiced = apply_hajimi_mosaic_to_pil(frame)
+                self._save_single_frame(mosaiced, target, target_suffix)
+
+        return str(target)
+
+    def _save_animated_mosaic(self, image: Image.Image, target: Path) -> None:
+        frames: list[Image.Image] = []
+        durations: list[int] = []
+        loop = int(image.info.get("loop", 0))
+
+        for frame in ImageSequence.Iterator(image):
+            rgba = (
+                frame.convert("RGBA") if frame.mode == "RGBA" else frame.convert("RGB")
+            )
+            mosaiced = apply_hajimi_mosaic_to_pil(rgba)
+            frames.append(mosaiced)
+            durations.append(
+                int(frame.info.get("duration", image.info.get("duration", 100)))
+            )
+
+        if not frames:
+            raise RuntimeError("无法读取动态图像帧。")
+
+        frames[0].save(
+            target,
+            save_all=True,
+            append_images=frames[1:],
+            duration=durations,
+            loop=loop,
+            disposal=2,
+        )
+
+    @staticmethod
+    def _save_single_frame(image: Image.Image, target: Path, suffix: str) -> None:
+        if suffix in {".jpg", ".jpeg"}:
+            image.convert("RGB").save(target, quality=95)
+            return
+        image.save(target)
 
     @staticmethod
     def format_pixiv_error(result: dict[str, Any]) -> str:

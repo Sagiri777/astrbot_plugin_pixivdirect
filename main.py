@@ -28,7 +28,7 @@ from .pixivSDK import pixiv
 from .utils import help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.7.0")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.8.1")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -43,6 +43,7 @@ class PixivDirectPlugin(Star):
         # DNS refresh state
         self._dns_refresh_lock = asyncio.Lock()
         self._dns_next_refresh_at: float = 0.0
+        self._dns_force_refresh: bool = False
 
         # Idle cache state
         self._idle_cache_task: asyncio.Task | None = None
@@ -69,6 +70,7 @@ class PixivDirectPlugin(Star):
             idle_cache_time_getter=self.get_next_idle_cache_time,
             idle_cache_all_func=self.trigger_idle_cache_all,
         )
+        self._command_handler.set_dns_refresh_func(self.trigger_dns_refresh)
 
     async def initialize(self):
         self._config_manager.ensure_directories()
@@ -102,6 +104,11 @@ class PixivDirectPlugin(Star):
             now = time.time()
             if now < self._dns_next_refresh_at:
                 return False
+
+            if self._dns_force_refresh:
+                self._dns_force_refresh = False
+                self._dns_next_refresh_at = self._next_dns_refresh_time()
+                return True
 
             if not self._config_manager.host_map_file.exists():
                 self._dns_next_refresh_at = self._next_dns_refresh_time()
@@ -146,7 +153,12 @@ class PixivDirectPlugin(Star):
             return "未触发过"
         from datetime import datetime
 
-        next_ts = self._last_idle_cache_ts + IDLE_CACHE_INTERVAL_SECONDS
+        idle_interval = float(
+            self._config_manager.get_constant(
+                "idle_cache_interval", IDLE_CACHE_INTERVAL_SECONDS
+            )
+        )
+        next_ts = self._last_idle_cache_ts + idle_interval
         dt = datetime.fromtimestamp(next_ts)
         now = datetime.now()
         delta = next_ts - now.timestamp()
@@ -160,28 +172,65 @@ class PixivDirectPlugin(Star):
         """Trigger idle cache for all users."""
         await self._perform_idle_cache()
 
+    async def trigger_dns_refresh(self) -> None:
+        async with self._dns_refresh_lock:
+            self._dns_force_refresh = True
+            self._dns_next_refresh_at = 0.0
+
     async def _pixiv_call(
         self, action: str, params: dict[str, Any], **kwargs: Any
     ) -> dict[str, Any]:
         dns_update_hosts = await self._consume_dns_refresh_flag()
+        call_kwargs = {
+            "dns_cache_file": str(self._config_manager.host_map_file),
+            "dns_update_hosts": dns_update_hosts,
+            "runtime_dns_resolve": False,
+            "max_retries": 2,
+            **kwargs,
+        }
         result = await asyncio.to_thread(
             pixiv,
             action,
             params,
-            dns_cache_file=str(self._config_manager.host_map_file),
-            dns_update_hosts=dns_update_hosts,
-            runtime_dns_resolve=False,
-            max_retries=2,
-            **kwargs,
+            **call_kwargs,
         )
         if dns_update_hosts:
+            await self._mark_dns_refreshed()
+
+        transient_statuses = {429, 440, 500, 502, 503, 504}
+        if (
+            not result.get("ok")
+            and action in {"search_illust", "search_user"}
+            and result.get("status") in transient_statuses
+        ):
+            logger.warning(
+                "[pixivdirect] Retrying %s after transient status %s",
+                action,
+                result.get("status"),
+            )
+            await self.trigger_dns_refresh()
+            retry_kwargs = {
+                **call_kwargs,
+                "dns_update_hosts": True,
+            }
+            result = await asyncio.to_thread(
+                pixiv,
+                action,
+                params,
+                **retry_kwargs,
+            )
             await self._mark_dns_refreshed()
         return result
 
     async def _idle_cache_loop(self) -> None:
         while True:
             try:
-                await asyncio.sleep(IDLE_CACHE_INTERVAL_SECONDS)
+                idle_interval = float(
+                    self._config_manager.get_constant(
+                        "idle_cache_interval", IDLE_CACHE_INTERVAL_SECONDS
+                    )
+                )
+                await asyncio.sleep(idle_interval)
                 await self._perform_idle_cache()
             except asyncio.CancelledError:
                 break
@@ -194,7 +243,12 @@ class PixivDirectPlugin(Star):
             return
 
         now = time.time()
-        if now - self._last_idle_cache_ts < IDLE_CACHE_INTERVAL_SECONDS:
+        idle_interval = float(
+            self._config_manager.get_constant(
+                "idle_cache_interval", IDLE_CACHE_INTERVAL_SECONDS
+            )
+        )
+        if now - self._last_idle_cache_ts < idle_interval:
             return
 
         self._last_idle_cache_ts = now
@@ -238,13 +292,19 @@ class PixivDirectPlugin(Star):
         user_cache = self._config_manager.random_cache.get(uid, {})
         current_queue = user_cache.get(DEFAULT_POOL_KEY, [])
 
-        if len(current_queue) >= DEFAULT_CACHE_SIZE:
+        default_cache_size = int(
+            self._config_manager.get_constant("default_cache_size", DEFAULT_CACHE_SIZE)
+        )
+        if len(current_queue) >= default_cache_size:
             return
 
-        items_to_add = DEFAULT_CACHE_SIZE - len(current_queue)
+        items_to_add = default_cache_size - len(current_queue)
 
         # Default count from constants
-        default_count = min(items_to_add, IDLE_CACHE_COUNT)
+        idle_cache_count = int(
+            self._config_manager.get_constant("idle_cache_count", IDLE_CACHE_COUNT)
+        )
+        default_count = min(items_to_add, idle_cache_count)
 
         user_queue = self._config_manager.idle_cache_queue.get(uid, [])
         filter_params = {"restrict": "public", "max_pages": 3}
@@ -284,6 +344,9 @@ class PixivDirectPlugin(Star):
             count=items_to_add,
             quality="original",
         )
+        if latest_refresh_token != refresh_token:
+            self._config_manager.token_map[uid] = latest_refresh_token
+            await self._config_manager.save_tokens()
 
         if error:
             logger.warning("[pixivdirect] Idle cache error for user %s: %s", uid, error)
@@ -348,6 +411,21 @@ class PixivDirectPlugin(Star):
         elif sub_cmd == "dns":
             async for result in self._command_handler.handle_random(
                 event, ["random", "dns", *tokens[1:]]
+            ):
+                yield result
+        elif sub_cmd == "config":
+            async for result in self._command_handler.handle_random(
+                event, ["random", "config", *tokens[1:]]
+            ):
+                yield result
+        elif sub_cmd == "groupblock":
+            async for result in self._command_handler.handle_random(
+                event, ["random", "groupblock", *tokens[1:]]
+            ):
+                yield result
+        elif sub_cmd in {"share", "r18", "unique", "quality", "cache"}:
+            async for result in self._command_handler.handle_random(
+                event, ["random", sub_cmd, *tokens[1:]]
             ):
                 yield result
         elif sub_cmd == "search":

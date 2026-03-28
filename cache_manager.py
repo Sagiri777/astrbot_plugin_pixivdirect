@@ -232,6 +232,8 @@ class CacheManager:
             "max_pages": "max_pages",
             "pages": "max_pages",
             "warmup": "warmup",
+            "count": "count",
+            "random": "random",
         }
 
         for token in filter_tokens:
@@ -273,9 +275,29 @@ class CacheManager:
             restrict = str(params["restrict"]).lower()
             params["restrict"] = "private" if restrict == "private" else "public"
 
+        if "count" in params:
+            count_raw = str(params["count"]).strip()
+            if count_raw.lower() == "always":
+                params["count"] = "always"
+            else:
+                try:
+                    params["count"] = max(1, int(count_raw))
+                except ValueError:
+                    params.pop("count", None)
+
+        if "random" in params:
+            params["random"] = str(params["random"]).lower() in (
+                "true",
+                "1",
+                "yes",
+                "on",
+            )
+
         summary_items: list[str] = []
-        for key in ("tag", "author", "author_id", "restrict", "max_pages"):
+        for key in ("tag", "author", "author_id", "restrict", "max_pages", "count"):
             if key in params:
                 summary_items.append(f"{key}={params[key]}")
+        if params.get("random") is True:
+            summary_items.append("random=true")
         summary = ", ".join(summary_items) if summary_items else "无"
         return params, summary

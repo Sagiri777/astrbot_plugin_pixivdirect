@@ -16,6 +16,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [1.8.1] - 2026-03-28
+
+### Changed
+- 群聊 R-18 自动打码改为直接内置 AutoHajimiMosaic 的核心分割与贴图流程，不再使用简化版近似实现
+- 清理仓库内临时引入的 AutoHajimiMosaic Web/UI、Docker 与批处理文件，仅保留插件运行所需模型与素材
+
+## [1.8.0] - 2026-03-28
+
+### Added
+- 新增群聊 R-18 标签显示开关，可单独控制是否展示标签行
+- 新增群聊 R-18 图片自动打码开关，发送时可自动生成打码版本
+
+### Changed
+- 群聊内所有 R-18 图片发送路径现在统一经过标签过滤与可选打码处理，覆盖随机收藏、作品详情和搜索预览
+
+## [1.7.3] - 2026-03-28
+
+### Fixed
+- 修复 `/pixiv dns refresh` 在当日已刷新过 DNS 后仍可能被 mtime 判定跳过的问题
+- 修复 `/pixiv random cache now N` 的成功统计会把历史缓存误算进本次结果的问题
+- 修复闲时缓存与即时缓存补货后未保存新的 refresh token，导致后续请求可能继续使用旧 token 的问题
+- 修复 `/pixiv searchuser` 仍会复用插画搜索的选项解析并透传不适用参数的问题
+
+## [1.7.2] - 2026-03-28
+
+### Fixed
+- 为 `/pixiv search` 和 `/pixiv searchuser` 增加对 440、429 和 5xx 状态码的自动重试
+- 搜索类请求首次失败后会强制刷新 DNS 并重新鉴权后再请求一次，降低偶发搜索失败概率
+
+## [1.7.1] - 2026-03-28
+
+### Changed
+- 运行时配置项现在会实际作用于限频、闲时缓存间隔、缓存目标数量和随机扫描页数
+- `/pixiv search` 与 `/pixiv searchuser` 现支持多词关键词，并正确分离后续选项
+- `/pixiv groupblock`、`/pixiv config` 以及 share/r18/unique/quality/cache 增加顶级命令别名
+
+### Fixed
+- 修复 `/pixiv dns refresh` 仅提示成功但未真正触发下次 DNS 刷新的问题
+- 修复 `count=` 与 `random=true` 筛选参数未被解析，导致闲时缓存和彻底随机模式失效的问题
+- 修复唯一随机模式未记录已发送作品、补货时未排除已发送作品的问题
+- 修复群屏蔽标签命令与文档不一致，现支持 `tag=xxx` 和包含空格的标签输入
+- 修复缓存索引重载时遗漏 `page_count` 元数据的问题
+
 ## [1.7.0] - 2026-03-26
 
 ### Added

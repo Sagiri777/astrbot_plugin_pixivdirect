@@ -17,6 +17,7 @@ from .constants import (
     SEARCH_MAX_LIMIT,
     SEARCH_SORT_OPTIONS,
     SEARCH_TARGET_OPTIONS,
+    SEARCH_USER_SORT_OPTIONS,
 )
 from .emoji_reaction import EmojiReactionHandler
 from .image_handler import ImageHandler
@@ -62,6 +63,163 @@ class CommandHandler:
         self._idle_cache_all_func = idle_cache_all_func
         self._last_command_ts: dict[str, float] = {}
         self._rate_limit_lock = asyncio.Lock()
+        self._dns_refresh_func = None
+
+    def set_dns_refresh_func(self, dns_refresh_func) -> None:
+        self._dns_refresh_func = dns_refresh_func
+
+    def _get_min_command_interval(self) -> float:
+        return float(
+            self._config.get_constant(
+                "min_command_interval", self._min_command_interval
+            )
+        )
+
+    def _get_max_random_pages(self) -> int:
+        return int(
+            self._config.get_constant("max_random_pages", self._max_random_pages)
+        )
+
+    def _get_idle_cache_count(self) -> int:
+        return int(
+            self._config.get_constant("idle_cache_count", self._idle_cache_count)
+        )
+
+    def _get_default_cache_size(self) -> int:
+        return int(
+            self._config.get_constant("default_cache_size", self._default_cache_size)
+        )
+
+    def _mark_sent_illust_if_needed(self, user_id: str, item: dict[str, Any]) -> bool:
+        if not self._config.is_unique_enabled_for_user(user_id):
+            return False
+        illust_id = item.get("illust_id")
+        if not isinstance(illust_id, int):
+            return False
+        self._config.add_sent_id_for_user(user_id, illust_id)
+        return True
+
+    @staticmethod
+    def _normalize_group_block_tag(raw_tag: str) -> str:
+        tag = raw_tag.strip()
+        if "=" in tag:
+            key, value = tag.split("=", 1)
+            if key.strip().lower() == "tag":
+                tag = value
+        return tag.strip()
+
+    @staticmethod
+    def _split_keyword_and_options(tokens: list[str]) -> tuple[str, list[str]]:
+        keyword_parts: list[str] = []
+        option_tokens: list[str] = []
+        seen_option = False
+
+        for token in tokens:
+            if "=" in token:
+                seen_option = True
+            if seen_option:
+                option_tokens.append(token)
+            else:
+                keyword_parts.append(token)
+
+        return " ".join(keyword_parts).strip(), option_tokens
+
+    def _should_hide_r18_tags(
+        self,
+        event: AstrMessageEvent,
+        item: dict[str, Any] | None,
+    ) -> bool:
+        group_id = event.get_group_id()
+        if not group_id or not item or not self._cache.is_r18_item(item):
+            return False
+        return not self._config.is_r18_tags_visible_in_group(str(group_id))
+
+    def _format_caption_for_event(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        item: dict[str, Any] | None = None,
+    ) -> str:
+        if not text or not self._should_hide_r18_tags(event, item):
+            return text
+        return "\n".join(
+            line for line in text.splitlines() if not line.startswith("🏷️ ")
+        )
+
+    async def _prepare_image_path_for_event(
+        self,
+        event: AstrMessageEvent,
+        image_path: str | None,
+        item: dict[str, Any] | None = None,
+    ) -> str | None:
+        if not image_path or not item:
+            return image_path
+
+        group_id = event.get_group_id()
+        if not group_id or not self._cache.is_r18_item(item):
+            return image_path
+
+        if not self._config.is_r18_mosaic_enabled_in_group(str(group_id)):
+            return image_path
+
+        try:
+            illust_id = item.get("illust_id")
+            name_prefix = (
+                f"r18mosaic_{illust_id}"
+                if isinstance(illust_id, int)
+                else "r18mosaic_image"
+            )
+            return await self._image.create_mosaic_image(
+                image_path,
+                name_prefix=name_prefix,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[pixivdirect] Failed to mosaic image %s: %s", image_path, exc
+            )
+            return image_path
+
+    async def _build_text_image_results(
+        self,
+        event: AstrMessageEvent,
+        text: str,
+        image_path: str | None,
+        item: dict[str, Any] | None = None,
+    ) -> list:
+        formatted_text = self._format_caption_for_event(event, text, item)
+        prepared_path = await self._prepare_image_path_for_event(
+            event,
+            image_path,
+            item,
+        )
+        if not prepared_path:
+            return [event.plain_result(formatted_text)]
+
+        if event.get_platform_name() == "aiocqhttp":
+            return [
+                event.plain_result(formatted_text),
+                event.image_result(prepared_path),
+            ]
+
+        return [event.make_result().message(formatted_text).file_image(prepared_path)]
+
+    async def _build_image_results(
+        self,
+        event: AstrMessageEvent,
+        image_path: str,
+        item: dict[str, Any] | None = None,
+    ) -> list:
+        prepared_path = await self._prepare_image_path_for_event(
+            event,
+            image_path,
+            item,
+        )
+        if not prepared_path:
+            return []
+
+        if event.get_platform_name() == "aiocqhttp":
+            return [event.image_result(prepared_path)]
+        return [event.make_result().file_image(prepared_path)]
 
     async def rate_limit_message(self, event: AstrMessageEvent) -> str | None:
         """Check if user is rate limited and return message if so."""
@@ -72,7 +230,7 @@ class CommandHandler:
             self._last_command_ts[key] = now
         if last is None:
             return None
-        wait_seconds = self._min_command_interval - (now - last)
+        wait_seconds = self._get_min_command_interval() - (now - last)
         if wait_seconds > 0:
             return f"⏳ 请求过于频繁，请在 {wait_seconds:.1f} 秒后重试。"
         return None
@@ -204,14 +362,20 @@ class CommandHandler:
                 caption = cached_item.get("caption") or "Pixiv 作品详情（缓存）"
                 path = cached_item.get("path")
                 if path and self.should_send_image(event, cached_item):
-                    yield (
-                        event.make_result()
-                        .message(f"{caption}\n- 来源: 缓存")
-                        .file_image(path)
-                    )
+                    for result in await self._build_text_image_results(
+                        event,
+                        f"{caption}\n- 来源: 缓存",
+                        path,
+                        cached_item,
+                    ):
+                        yield result
                 else:
                     yield event.plain_result(
-                        f"{caption}\n- 来源: 缓存\n⚠️ R-18 内容在群聊中仅显示信息"
+                        self._format_caption_for_event(
+                            event,
+                            f"{caption}\n- 来源: 缓存\n⚠️ R-18 内容在群聊中仅显示信息",
+                            cached_item,
+                        )
                     )
                 return
 
@@ -309,7 +473,13 @@ class CommandHandler:
                         str(gif_path),
                     )
 
-                    yield event.make_result().message(caption).file_image(str(gif_path))
+                    for result in await self._build_text_image_results(
+                        event,
+                        caption,
+                        str(gif_path),
+                        illust,
+                    ):
+                        yield result
 
                     # Cache the ugoira
                     try:
@@ -374,13 +544,22 @@ class CommandHandler:
                                     name_prefix=f"illust_{illust.get('id') or target_id}_{i}",
                                 )
                                 if i == 0:
-                                    yield (
-                                        event.make_result()
-                                        .message(caption)
-                                        .file_image(local_path)
-                                    )
+                                    for (
+                                        result_item
+                                    ) in await self._build_text_image_results(
+                                        event,
+                                        caption,
+                                        local_path,
+                                        illust,
+                                    ):
+                                        yield result_item
                                 else:
-                                    yield event.make_result().file_image(local_path)
+                                    for result_item in await self._build_image_results(
+                                        event,
+                                        local_path,
+                                        illust,
+                                    ):
+                                        yield result_item
                             except Exception as exc:
                                 logger.warning(
                                     "[pixivdirect] Image download failed: %s", exc
@@ -450,18 +629,29 @@ class CommandHandler:
 
                         if local_paths:
                             # Send first image with caption, then forward the rest
-                            yield (
-                                event.make_result()
-                                .message(caption)
-                                .file_image(local_paths[0])
-                            )
+                            for result_item in await self._build_text_image_results(
+                                event,
+                                caption,
+                                local_paths[0],
+                                illust,
+                            ):
+                                yield result_item
 
                             if len(local_paths) > 1:
                                 # Construct forward message nodes
                                 nodes = []
                                 for path in local_paths[1:]:
+                                    prepared_path = (
+                                        await self._prepare_image_path_for_event(
+                                            event,
+                                            path,
+                                            illust,
+                                        )
+                                    )
+                                    if not prepared_path:
+                                        continue
                                     node = Node(
-                                        content=[ImageComp(file=path)],
+                                        content=[ImageComp(file=prepared_path)],
                                         name="PixivBot",
                                         uin=str(event.get_self_id() or "0"),
                                     )
@@ -570,6 +760,8 @@ class CommandHandler:
                 if not event.is_admin():
                     yield event.plain_result("❌ 仅 AstrBot 管理员可手动刷新 DNS。")
                     return
+                if self._dns_refresh_func:
+                    await self._dns_refresh_func()
                 yield event.plain_result(
                     "✅ 已触发 DNS 刷新，将在下次 Pixiv API 请求时执行。"
                 )
@@ -591,33 +783,79 @@ class CommandHandler:
 
         # Handle r18 config
         if len(args) >= 2 and args[1].lower() == "r18":
+            group_id = event.get_group_id()
+            if not group_id:
+                yield event.plain_result("❌ 此命令仅可在群聊中使用。")
+                return
+
+            group_id_str = str(group_id)
             if len(args) >= 3:
                 if not event.is_admin():
                     yield event.plain_result(
                         "❌ 仅 AstrBot 管理员可修改 R-18 群聊设置。"
                     )
                     return
-                group_id = str(event.get_group_id())
-                value = args[2].lower()
-                if value in ("true", "1", "yes", "on"):
-                    self._config.r18_in_group[group_id] = True
-                    await self._config.save_r18_config()
-                    yield event.plain_result("✅ 已开启群聊 R-18 内容显示。")
-                    return
-                elif value in ("false", "0", "no", "off"):
-                    self._config.r18_in_group[group_id] = False
-                    await self._config.save_r18_config()
-                    yield event.plain_result("✅ 已关闭群聊 R-18 内容显示。")
-                    return
+
+                setting = args[2].lower()
+                if len(args) >= 4 and setting in {"tag", "mosaic"}:
+                    value = args[3].lower()
                 else:
+                    value = setting
+                    setting = "display"
+
+                if value not in ("true", "1", "yes", "on", "false", "0", "no", "off"):
                     yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
                     return
-            else:
-                group_id = str(event.get_group_id())
-                status = (
-                    "开启" if self._config.is_r18_enabled_in_group(group_id) else "关闭"
+
+                enabled = value in ("true", "1", "yes", "on")
+                if setting == "display":
+                    self._config.r18_in_group[group_id_str] = enabled
+                    await self._config.save_r18_config()
+                    action = "开启" if enabled else "关闭"
+                    yield event.plain_result(f"✅ 已{action}群聊 R-18 内容显示。")
+                    return
+                if setting == "tag":
+                    self._config.r18_tags_in_group[group_id_str] = enabled
+                    await self._config.save_r18_tag_config()
+                    action = "显示" if enabled else "隐藏"
+                    yield event.plain_result(f"✅ 已设置群聊 R-18 标签为：{action}")
+                    return
+                if setting == "mosaic":
+                    self._config.r18_mosaic_in_group[group_id_str] = enabled
+                    await self._config.save_r18_mosaic_config()
+                    action = "开启" if enabled else "关闭"
+                    yield event.plain_result(f"✅ 已{action}群聊 R-18 图片自动打码。")
+                    return
+
+                yield event.plain_result(
+                    "❌ 用法：/pixiv random r18 true/false 或 /pixiv random r18 tag|mosaic true/false"
                 )
-                yield event.plain_result(f"ℹ️ 群聊 R-18 内容显示当前状态：{status}")
+                return
+            else:
+                status = (
+                    "开启"
+                    if self._config.is_r18_enabled_in_group(group_id_str)
+                    else "关闭"
+                )
+                tag_status = (
+                    "显示"
+                    if self._config.is_r18_tags_visible_in_group(group_id_str)
+                    else "隐藏"
+                )
+                mosaic_status = (
+                    "开启"
+                    if self._config.is_r18_mosaic_enabled_in_group(group_id_str)
+                    else "关闭"
+                )
+                yield event.plain_result(
+                    "ℹ️ 群聊 R-18 设置：\n"
+                    f"- 图片显示: {status}\n"
+                    f"- 标签显示: {tag_status}\n"
+                    f"- 自动打码: {mosaic_status}\n"
+                    "- 使用 /pixiv random r18 true/false 控制图片显示\n"
+                    "- 使用 /pixiv random r18 tag true/false 控制标签显示\n"
+                    "- 使用 /pixiv random r18 mosaic true/false 控制自动打码"
+                )
                 return
 
         # Handle unique config
@@ -668,7 +906,10 @@ class CommandHandler:
             group_id_str = str(group_id)
 
             if len(args) >= 4 and args[2].lower() == "add":
-                tag = args[3]
+                tag = self._normalize_group_block_tag(" ".join(args[3:]))
+                if not tag:
+                    yield event.plain_result("❌ 请输入要屏蔽的标签。")
+                    return
                 blocked_tags = self._config.group_blocked_tags.setdefault(
                     group_id_str, []
                 )
@@ -682,7 +923,10 @@ class CommandHandler:
                     yield event.plain_result(f"ℹ️ 标签「{tag}」已在本群屏蔽列表中。")
                 return
             elif len(args) >= 4 and args[2].lower() == "remove":
-                tag = args[3]
+                tag = self._normalize_group_block_tag(" ".join(args[3:]))
+                if not tag:
+                    yield event.plain_result("❌ 请输入要移除的标签。")
+                    return
                 blocked_tags = self._config.group_blocked_tags.get(group_id_str, [])
                 if tag in blocked_tags:
                     blocked_tags.remove(tag)
@@ -732,7 +976,7 @@ class CommandHandler:
                 cache_filter_tokens = args[3:]
                 cache_filter_params, cache_filter_summary = (
                     self._cache.parse_random_filter(
-                        cache_filter_tokens, self._max_random_pages
+                        cache_filter_tokens, self._get_max_random_pages()
                     )
                 )
 
@@ -777,7 +1021,8 @@ class CommandHandler:
                     remaining = item.get("remaining", 0)
                     count = item.get("count", 1)
                     _, summary = self._cache.parse_random_filter(
-                        [f"{k}={v}" for k, v in fp.items()], self._max_random_pages
+                        [f"{k}={v}" for k, v in fp.items()],
+                        self._get_max_random_pages(),
                     )
                     remain_text = (
                         "始终"
@@ -808,6 +1053,9 @@ class CommandHandler:
                 last_error = None
                 success_count = 0
                 fail_count = 0
+                initial_queue_len = len(
+                    self._config.random_cache.get(key, {}).get(DEFAULT_POOL_KEY, [])
+                )
 
                 for attempt in range(max_retries + 1):
                     try:
@@ -824,10 +1072,16 @@ class CommandHandler:
                             # 非连接错误，不重试
                             break
 
+                        if latest_refresh_token != user_token:
+                            await self.set_user_token(event, latest_refresh_token)
+                            user_token = latest_refresh_token
+
                         # 统计成功和失败的数量
                         user_cache = self._config.random_cache.get(key, {})
                         queue = user_cache.get(DEFAULT_POOL_KEY, [])
-                        success_count = min(count, len(queue))
+                        success_count = min(
+                            count, max(0, len(queue) - initial_queue_len)
+                        )
                         fail_count = count - success_count
                         last_error = None
                         break
@@ -1078,7 +1332,7 @@ class CommandHandler:
                     remaining_args.append(token)
 
         filter_params, filter_summary = self._cache.parse_random_filter(
-            remaining_args, self._max_random_pages
+            remaining_args, self._get_max_random_pages()
         )
         filter_params.setdefault("restrict", "public")
         filter_params.setdefault("max_pages", 3)
@@ -1086,24 +1340,34 @@ class CommandHandler:
         logger.info(
             f"[pixivdirect] Continuing with random bookmark, filter_params: {filter_params}"
         )
+        thorough_random = bool(filter_params.pop("random", False))
 
         # @someone mode - read from target user cache
         if target_user_key:
             cached_item = await self._cache.pop_cached_item(
-                target_user_key, cache_key, filter_params
+                target_user_key,
+                cache_key,
+                filter_params,
+                exclude_sent=self._config.is_unique_enabled_for_user(target_user_key),
             )
             if cached_item:
                 await self._emoji.add_emoji_reaction(event, "random")
                 caption = cached_item.get("caption") or "Pixiv 随机收藏（缓存）"
                 path = cached_item.get("path")
                 if path and self.should_send_image(event, cached_item):
-                    yield (
-                        event.make_result()
-                        .message(f"{caption}\n- 来源: 缓存（共享）")
-                        .file_image(path)
-                    )
+                    for result in await self._build_text_image_results(
+                        event,
+                        f"{caption}\n- 来源: 缓存（共享）",
+                        path,
+                        cached_item,
+                    ):
+                        yield result
                 else:
-                    msg = f"{caption}\n- 来源: 缓存（共享）"
+                    msg = self._format_caption_for_event(
+                        event,
+                        f"{caption}\n- 来源: 缓存（共享）",
+                        cached_item,
+                    )
                     if self._cache.is_r18_item(cached_item):
                         msg += "\n⚠️ R-18 内容在群聊中仅显示信息"
                     yield event.plain_result(msg)
@@ -1130,6 +1394,13 @@ class CommandHandler:
                     refresh_token=target_user_token,
                     filter_params=filter_params.copy(),
                     count=warmup,
+                    exclude_sent=self._config.is_unique_enabled_for_user(
+                        target_user_key
+                    ),
+                    extended_scan=self._config.is_unique_enabled_for_user(
+                        target_user_key
+                    ),
+                    thorough_random=thorough_random,
                     quality=self._get_quality_for_event(event),
                 )
                 if latest_refresh_token != target_user_token:
@@ -1143,7 +1414,12 @@ class CommandHandler:
 
                 # Try to get item from cache again
                 cached_item = await self._cache.pop_cached_item(
-                    target_user_key, cache_key, filter_params
+                    target_user_key,
+                    cache_key,
+                    filter_params,
+                    exclude_sent=self._config.is_unique_enabled_for_user(
+                        target_user_key
+                    ),
                 )
                 if not cached_item:
                     yield event.plain_result("❌ 未找到可发送的缓存图片。")
@@ -1153,13 +1429,19 @@ class CommandHandler:
                 caption = cached_item.get("caption") or "Pixiv 随机收藏（共享）"
                 path = cached_item.get("path")
                 if path and self.should_send_image(event, cached_item):
-                    yield (
-                        event.make_result()
-                        .message(f"{caption}\n- 来源: 新获取（共享）")
-                        .file_image(path)
-                    )
+                    for result in await self._build_text_image_results(
+                        event,
+                        f"{caption}\n- 来源: 新获取（共享）",
+                        path,
+                        cached_item,
+                    ):
+                        yield result
                 else:
-                    msg = f"{caption}\n- 来源: 新获取（共享）"
+                    msg = self._format_caption_for_event(
+                        event,
+                        f"{caption}\n- 来源: 新获取（共享）",
+                        cached_item,
+                    )
                     if self._cache.is_r18_item(cached_item):
                         msg += "\n⚠️ R-18 内容在群聊中仅显示信息"
                     yield event.plain_result(msg)
@@ -1175,8 +1457,17 @@ class CommandHandler:
         key = user_key(event)
 
         # Try cache first
-        cached_item = await self._cache.pop_cached_item(key, cache_key, filter_params)
+        unique_enabled = self._config.is_unique_enabled_for_user(key)
+        cached_item = await self._cache.pop_cached_item(
+            key,
+            cache_key,
+            filter_params,
+            exclude_sent=unique_enabled,
+        )
         if cached_item:
+            sent_ids_changed = self._mark_sent_illust_if_needed(key, cached_item)
+            if sent_ids_changed:
+                await self._config.save_sent_illust_ids()
             await self._emoji.add_emoji_reaction(event, "random")
             caption = cached_item.get("caption") or "Pixiv 随机收藏（缓存）"
             path = cached_item.get("path")
@@ -1193,14 +1484,20 @@ class CommandHandler:
             else:
                 remain_text = f"{remain_total}张 (全部)"
             if path and self.should_send_image(event, cached_item):
-                yield (
-                    event.make_result()
-                    .message(f"{caption}\n- 来源: 缓存\n- 剩余缓存: {remain_text}")
-                    .file_image(path)
-                )
+                for result in await self._build_text_image_results(
+                    event,
+                    f"{caption}\n- 来源: 缓存\n- 剩余缓存: {remain_text}",
+                    path,
+                    cached_item,
+                ):
+                    yield result
             else:
                 yield event.plain_result(
-                    f"{caption}\n- 来源: 缓存\n- 剩余缓存: {remain_text}\n⚠️ R-18 内容在群聊中仅显示信息"
+                    self._format_caption_for_event(
+                        event,
+                        f"{caption}\n- 来源: 缓存\n- 剩余缓存: {remain_text}\n⚠️ R-18 内容在群聊中仅显示信息",
+                        cached_item,
+                    )
                 )
             return
 
@@ -1220,6 +1517,9 @@ class CommandHandler:
             refresh_token=user_token,
             filter_params=filter_params,
             count=warmup,
+            exclude_sent=unique_enabled,
+            extended_scan=unique_enabled,
+            thorough_random=thorough_random,
             quality=self._get_quality_for_event(event),
         )
         if latest_refresh_token != user_token:
@@ -1246,10 +1546,18 @@ class CommandHandler:
             yield event.plain_result(error_msg)
             return
 
-        picked = await self._cache.pop_cached_item(key, cache_key, filter_params)
+        picked = await self._cache.pop_cached_item(
+            key,
+            cache_key,
+            filter_params,
+            exclude_sent=unique_enabled,
+        )
         if not picked:
             yield event.plain_result("❌ 未找到可发送的缓存图片。")
             return
+        sent_ids_changed = self._mark_sent_illust_if_needed(key, picked)
+        if sent_ids_changed:
+            await self._config.save_sent_illust_ids()
 
         caption = picked.get("caption") or "Pixiv 随机收藏"
         path = picked.get("path")
@@ -1266,16 +1574,20 @@ class CommandHandler:
         else:
             remain_text = f"{remain_total}张 (全部)"
         if path and self.should_send_image(event, picked):
-            yield (
-                event.make_result()
-                .message(
-                    f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}",
-                )
-                .file_image(path)
-            )
+            for result in await self._build_text_image_results(
+                event,
+                f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}",
+                path,
+                picked,
+            ):
+                yield result
         else:
             yield event.plain_result(
-                f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}\n⚠️ R-18 内容在群聊中仅显示信息"
+                self._format_caption_for_event(
+                    event,
+                    f"{caption}\n- 来源: 新获取\n- 剩余缓存: {remain_text}\n- 筛选条件: {filter_summary}\n⚠️ R-18 内容在群聊中仅显示信息",
+                    picked,
+                )
             )
 
     async def _enqueue_random_items(
@@ -1432,24 +1744,33 @@ class CommandHandler:
         await self._config.save_cache_index()
         return latest_refresh_token, None
 
-    def _parse_search_options(self, args: list[str]) -> dict[str, Any]:
+    def _parse_search_options(
+        self,
+        args: list[str],
+        *,
+        allowed_sorts: set[str] | None = None,
+        allow_target: bool = True,
+        allow_duration: bool = True,
+        allow_translate: bool = True,
+    ) -> dict[str, Any]:
         """Parse search options from command arguments."""
         options: dict[str, Any] = {}
+        valid_sorts = allowed_sorts or set(SEARCH_SORT_OPTIONS)
         for arg in args:
             if "=" in arg:
                 key, value = arg.split("=", 1)
                 key = key.lower().strip()
                 value = value.strip()
                 if key == "sort":
-                    if value in SEARCH_SORT_OPTIONS:
+                    if value in valid_sorts:
                         options["sort"] = value
-                elif key == "target":
+                elif key == "target" and allow_target:
                     if value in SEARCH_TARGET_OPTIONS:
                         options["search_target"] = value
-                elif key == "duration":
+                elif key == "duration" and allow_duration:
                     if value in SEARCH_DURATION_OPTIONS:
                         options["duration"] = value
-                elif key == "translate":
+                elif key == "translate" and allow_translate:
                     options["include_translated_tag_results"] = value.lower() in (
                         "true",
                         "1",
@@ -1484,14 +1805,14 @@ class CommandHandler:
             yield event.plain_result("❌ 请先登录：/pixiv login {refresh_token}")
             return
 
-        keyword = args[1].strip()
+        keyword, option_tokens = self._split_keyword_and_options(args[1:])
         if not keyword:
             await self._emoji.add_emoji_reaction(event, "error")
             yield event.plain_result("❌ 搜索关键词不能为空。")
             return
 
         # Parse options
-        options = self._parse_search_options(args[2:])
+        options = self._parse_search_options(option_tokens)
         page = options.get("page", 1)
         limit = options.get("limit", SEARCH_DEFAULT_LIMIT)
 
@@ -1571,7 +1892,13 @@ class CommandHandler:
                         refresh_token=latest_refresh_token,
                         name_prefix=f"search_{keyword}_{first_illust_id}",
                     )
-                    yield (event.make_result().message(caption).file_image(local_path))
+                    for result_item in await self._build_text_image_results(
+                        event,
+                        caption,
+                        local_path,
+                        first_illust,
+                    ):
+                        yield result_item
                     return
             except Exception as exc:
                 logger.warning("[pixivdirect] Search preview download failed: %s", exc)
@@ -1592,22 +1919,27 @@ class CommandHandler:
             yield event.plain_result("❌ 请先登录：/pixiv login {refresh_token}")
             return
 
-        keyword = args[1].strip()
+        keyword, option_tokens = self._split_keyword_and_options(args[1:])
         if not keyword:
             await self._emoji.add_emoji_reaction(event, "error")
             yield event.plain_result("❌ 搜索关键词不能为空。")
             return
 
         # Parse options (only page and limit for user search)
-        options = self._parse_search_options(args[2:])
+        options = self._parse_search_options(
+            option_tokens,
+            allowed_sorts=set(SEARCH_USER_SORT_OPTIONS),
+            allow_target=False,
+            allow_duration=False,
+            allow_translate=False,
+        )
         page = options.get("page", 1)
         limit = options.get("limit", SEARCH_DEFAULT_LIMIT)
 
         # Build search params
-        search_params: dict[str, Any] = {
-            "word": keyword,
-            "sort": options.get("sort", "date_desc"),
-        }
+        search_params: dict[str, Any] = {"word": keyword}
+        if "sort" in options:
+            search_params["sort"] = options["sort"]
 
         # Calculate offset from page
         if page > 1:

@@ -19,6 +19,8 @@ class ConfigManager:
         self._host_map_file = plugin_data_dir / "pixiv_host_map.json"
         self._share_config_file = plugin_data_dir / "share_config.json"
         self._r18_config_file = plugin_data_dir / "r18_config.json"
+        self._r18_tag_config_file = plugin_data_dir / "r18_tag_config.json"
+        self._r18_mosaic_config_file = plugin_data_dir / "r18_mosaic_config.json"
         self._idle_cache_queue_file = plugin_data_dir / "idle_cache_queue.json"
         self._unique_config_file = plugin_data_dir / "unique_config.json"
         self._group_blocked_tags_file = plugin_data_dir / "group_blocked_tags.json"
@@ -32,6 +34,8 @@ class ConfigManager:
         self._token_map: dict[str, str] = {}
         self._share_enabled: dict[str, bool] = {}
         self._r18_in_group: dict[str, bool] = {}
+        self._r18_tags_in_group: dict[str, bool] = {}
+        self._r18_mosaic_in_group: dict[str, bool] = {}
         self._random_unique: dict[str, str] = {}
         self._idle_cache_queue: dict[str, list[dict[str, Any]]] = {}
         self._group_blocked_tags: dict[str, list[str]] = {}
@@ -73,6 +77,14 @@ class ConfigManager:
         self._random_unique = value
 
     @property
+    def r18_tags_in_group(self) -> dict[str, bool]:
+        return self._r18_tags_in_group
+
+    @property
+    def r18_mosaic_in_group(self) -> dict[str, bool]:
+        return self._r18_mosaic_in_group
+
+    @property
     def idle_cache_queue(self) -> dict[str, list[dict[str, Any]]]:
         return self._idle_cache_queue
 
@@ -82,6 +94,12 @@ class ConfigManager:
 
     def is_r18_enabled_in_group(self, group_id: str) -> bool:
         return self._r18_in_group.get(group_id, False)
+
+    def is_r18_tags_visible_in_group(self, group_id: str) -> bool:
+        return self._r18_tags_in_group.get(group_id, True)
+
+    def is_r18_mosaic_enabled_in_group(self, group_id: str) -> bool:
+        return self._r18_mosaic_in_group.get(group_id, False)
 
     def is_unique_enabled_for_user(self, user_id: str) -> bool:
         return self._random_unique.get(user_id, "false") == "true"
@@ -131,6 +149,8 @@ class ConfigManager:
         self._load_cache_index()
         self._load_share_config()
         self._load_r18_config()
+        self._load_r18_tag_config()
+        self._load_r18_mosaic_config()
         self._load_idle_cache_queue()
         self._load_unique_config()
         self._load_group_blocked_tags()
@@ -237,6 +257,10 @@ class ConfigManager:
                             preserved["author_name"] = (
                                 author_name if isinstance(author_name, str) else ""
                             )
+                            page_count = item.get("page_count")
+                            preserved["page_count"] = (
+                                page_count if isinstance(page_count, int) else 1
+                            )
                             valid_items.append(preserved)
                 if valid_items:
                     loaded_user_cache[cache_key] = valid_items
@@ -302,6 +326,61 @@ class ConfigManager:
                 if isinstance(key, str) and key:
                     loaded[key] = bool(value)
         self._r18_in_group = loaded
+
+    def _load_r18_tag_config(self) -> None:
+        if not self._r18_tag_config_file.exists():
+            self._r18_tags_in_group = {}
+            try:
+                self._r18_tag_config_file.parent.mkdir(parents=True, exist_ok=True)
+                self._r18_tag_config_file.write_text("{}", encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default r18 tag config: %s", exc
+                )
+            return
+        try:
+            raw = json.loads(self._r18_tag_config_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load r18 tag config, using default (visible)."
+            )
+            self._r18_tags_in_group = {}
+            return
+
+        loaded: dict[str, bool] = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                if isinstance(key, str) and key:
+                    loaded[key] = bool(value)
+        self._r18_tags_in_group = loaded
+
+    def _load_r18_mosaic_config(self) -> None:
+        if not self._r18_mosaic_config_file.exists():
+            self._r18_mosaic_in_group = {}
+            try:
+                self._r18_mosaic_config_file.parent.mkdir(parents=True, exist_ok=True)
+                self._r18_mosaic_config_file.write_text("{}", encoding="utf-8")
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to create default r18 mosaic config: %s",
+                    exc,
+                )
+            return
+        try:
+            raw = json.loads(self._r18_mosaic_config_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            logger.warning(
+                "[pixivdirect] Failed to load r18 mosaic config, using default (off)."
+            )
+            self._r18_mosaic_in_group = {}
+            return
+
+        loaded: dict[str, bool] = {}
+        if isinstance(raw, dict):
+            for key, value in raw.items():
+                if isinstance(key, str) and key:
+                    loaded[key] = bool(value)
+        self._r18_mosaic_in_group = loaded
 
     def _load_idle_cache_queue(self) -> None:
         if not self._idle_cache_queue_file.exists():
@@ -437,6 +516,34 @@ class ConfigManager:
                 )
             except OSError as exc:
                 logger.warning("[pixivdirect] Failed to save r18 config: %s", exc)
+
+    async def save_r18_tag_config(self) -> None:
+        async with self._cache_lock:
+            try:
+                self._r18_tag_config_file.write_text(
+                    json.dumps(self._r18_tags_in_group, ensure_ascii=False, indent=2)
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning("[pixivdirect] Failed to save r18 tag config: %s", exc)
+
+    async def save_r18_mosaic_config(self) -> None:
+        async with self._cache_lock:
+            try:
+                self._r18_mosaic_config_file.write_text(
+                    json.dumps(
+                        self._r18_mosaic_in_group,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as exc:
+                logger.warning(
+                    "[pixivdirect] Failed to save r18 mosaic config: %s", exc
+                )
 
     async def save_idle_cache_queue(self) -> None:
         async with self._cache_lock:
