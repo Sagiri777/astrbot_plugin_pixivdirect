@@ -170,6 +170,7 @@ class ConfigManager:
         author_id = item.get("author_id")
         author_name = item.get("author_name")
         page_count = item.get("page_count")
+        extra_image_paths = item.get("extra_image_paths")
 
         return {
             "path": path,
@@ -182,6 +183,13 @@ class ConfigManager:
             "author_id": author_id if isinstance(author_id, (int, str)) else None,
             "author_name": author_name if isinstance(author_name, str) else "",
             "page_count": page_count if isinstance(page_count, int) else 1,
+            "extra_image_paths": [
+                extra_path
+                for extra_path in extra_image_paths
+                if ConfigManager._path_exists(extra_path)
+            ]
+            if isinstance(extra_image_paths, list)
+            else [],
         }
 
     def _write_json_file(

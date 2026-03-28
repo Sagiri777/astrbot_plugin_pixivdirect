@@ -16,6 +16,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.8.9] - 2026-03-29
+
+### Added
+- `/pixiv random` 现支持为多页作品发送多张图片，随机缓存会同时保存附加页图片路径
+
+### Fixed
+- 修复随机收藏命中多页作品时始终只发送首图的问题
+
+## [1.8.8] - 2026-03-29
+
+### Changed
+- 抽取 `commands.py` 中作品详情图片结果缓存与多图发送的公共 helper，减少动图、少图、多图三条路径的重复代码
+
+### Fixed
+- 统一作品详情缓存写入字段，降低后续调整作品发送路径时遗漏缓存元数据的风险
+
 ## [1.8.7] - 2026-03-29
 
 ### Changed

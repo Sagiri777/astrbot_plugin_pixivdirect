@@ -122,6 +122,7 @@ class CommandHandler:
         author_id: int | str | None = None,
         author_name: str = "",
         page_count: Any = 1,
+        extra_image_paths: list[str] | None = None,
     ) -> dict[str, Any]:
         return {
             "path": path,
@@ -132,6 +133,7 @@ class CommandHandler:
             "author_id": author_id,
             "author_name": author_name,
             "page_count": page_count if isinstance(page_count, int) else 1,
+            "extra_image_paths": extra_image_paths or [],
         }
 
     async def _append_cache_item(self, user_id: str, item: dict[str, Any]) -> None:
@@ -188,6 +190,17 @@ class CommandHandler:
                 item,
             ):
                 yield result
+            extra_image_paths = item.get("extra_image_paths", [])
+            if isinstance(extra_image_paths, list):
+                for extra_path in extra_image_paths:
+                    if not isinstance(extra_path, str) or not extra_path:
+                        continue
+                    for result in await self._build_image_results(
+                        event,
+                        extra_path,
+                        item,
+                    ):
+                        yield result
             return
 
         plain_message = self._format_caption_for_event(event, message, item)
@@ -232,6 +245,64 @@ class CommandHandler:
             thorough_random=thorough_random,
             quality=quality,
         )
+
+    async def _cache_illust_result(
+        self,
+        event: AstrMessageEvent,
+        *,
+        path: str,
+        caption: str,
+        illust: dict[str, Any],
+        tags: list[str],
+        illust_id: int | None,
+        author: dict[str, Any],
+        log_target: str,
+    ) -> None:
+        try:
+            await self._append_cache_item(
+                user_key(event),
+                self._build_cache_item(
+                    path=path,
+                    caption=caption,
+                    x_restrict=illust.get("x_restrict"),
+                    tags=tags,
+                    illust_id=illust_id,
+                    author_id=author.get("id"),
+                    author_name=str(author.get("name") or ""),
+                    page_count=illust.get("page_count", 1),
+                ),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[pixivdirect] Failed to cache illust %s: %s",
+                log_target,
+                exc,
+            )
+
+    async def _emit_primary_and_extra_images(
+        self,
+        event: AstrMessageEvent,
+        *,
+        caption: str,
+        primary_path: str,
+        extra_paths: list[str],
+        item: dict[str, Any],
+    ):
+        for result_item in await self._build_text_image_results(
+            event,
+            caption,
+            primary_path,
+            item,
+        ):
+            yield result_item
+
+        for extra_path in extra_paths:
+            for result_item in await self._build_image_results(
+                event,
+                extra_path,
+                item,
+            ):
+                yield result_item
 
     @staticmethod
     def _parse_warmup_count(filter_params: dict[str, Any]) -> int:
@@ -687,29 +758,16 @@ class CommandHandler:
                     ):
                         yield result
 
-                    # Cache the ugoira
-                    try:
-                        await self._append_cache_item(
-                            user_key(event),
-                            self._build_cache_item(
-                                path=str(gif_path),
-                                caption=caption,
-                                x_restrict=illust.get("x_restrict"),
-                                tags=tags,
-                                illust_id=int(target_id)
-                                if target_id.isdigit()
-                                else None,
-                                author_id=user.get("id"),
-                                author_name=str(user.get("name") or ""),
-                                page_count=illust.get("page_count", 1),
-                            ),
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[pixivdirect] Failed to cache ugoira %s: %s",
-                            target_id,
-                            exc,
-                        )
+                    await self._cache_illust_result(
+                        event,
+                        path=str(gif_path),
+                        caption=caption,
+                        illust=illust,
+                        tags=tags,
+                        illust_id=int(target_id) if target_id.isdigit() else None,
+                        author=user,
+                        log_target=target_id,
+                    )
                     return
 
                 except Exception as exc:
@@ -735,6 +793,7 @@ class CommandHandler:
                 try:
                     if page_count <= MULTI_IMAGE_THRESHOLD:
                         # Download and send all images directly
+                        downloaded_paths: list[str] = []
                         for i, img_url in enumerate(
                             all_image_urls[:MULTI_IMAGE_THRESHOLD]
                         ):
@@ -745,56 +804,34 @@ class CommandHandler:
                                     refresh_token=latest_refresh_token,
                                     name_prefix=f"illust_{illust.get('id') or target_id}_{i}",
                                 )
-                                if i == 0:
-                                    for (
-                                        result_item
-                                    ) in await self._build_text_image_results(
-                                        event,
-                                        caption,
-                                        local_path,
-                                        illust,
-                                    ):
-                                        yield result_item
-                                else:
-                                    for result_item in await self._build_image_results(
-                                        event,
-                                        local_path,
-                                        illust,
-                                    ):
-                                        yield result_item
+                                downloaded_paths.append(local_path)
                             except Exception as exc:
                                 logger.warning(
                                     "[pixivdirect] Image download failed: %s", exc
                                 )
 
-                        # Cache the first image
-                        try:
-                            first_path = await self._image.download_image_to_cache(
-                                all_image_urls[0],
-                                access_token=result.get("access_token"),
-                                refresh_token=latest_refresh_token,
-                                name_prefix=f"illust_{illust.get('id') or target_id}_cache",
-                            )
-                            await self._append_cache_item(
-                                user_key(event),
-                                self._build_cache_item(
-                                    path=first_path,
-                                    caption=caption,
-                                    x_restrict=illust.get("x_restrict"),
-                                    tags=tags,
-                                    illust_id=int(target_id)
-                                    if target_id.isdigit()
-                                    else None,
-                                    author_id=user.get("id"),
-                                    author_name=str(user.get("name") or ""),
-                                    page_count=page_count,
-                                ),
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                "[pixivdirect] Failed to cache illust %s: %s",
-                                target_id,
-                                exc,
+                        if downloaded_paths:
+                            async for (
+                                result_item
+                            ) in self._emit_primary_and_extra_images(
+                                event,
+                                caption=caption,
+                                primary_path=downloaded_paths[0],
+                                extra_paths=downloaded_paths[1:],
+                                item=illust,
+                            ):
+                                yield result_item
+                            await self._cache_illust_result(
+                                event,
+                                path=downloaded_paths[0],
+                                caption=caption,
+                                illust=illust,
+                                tags=tags,
+                                illust_id=int(target_id)
+                                if target_id.isdigit()
+                                else None,
+                                author=user,
+                                log_target=target_id,
                             )
                     else:
                         # Use forward message for many images
@@ -858,29 +895,18 @@ class CommandHandler:
                                     forward_msg = Nodes(nodes=nodes)
                                     yield event.make_result().chain([forward_msg])
 
-                        # Cache the first image
-                        try:
-                            if local_paths:
-                                await self._append_cache_item(
-                                    user_key(event),
-                                    self._build_cache_item(
-                                        path=local_paths[0],
-                                        caption=caption,
-                                        x_restrict=illust.get("x_restrict"),
-                                        tags=tags,
-                                        illust_id=int(target_id)
-                                        if target_id.isdigit()
-                                        else None,
-                                        author_id=user.get("id"),
-                                        author_name=str(user.get("name") or ""),
-                                        page_count=page_count,
-                                    ),
-                                )
-                        except Exception as exc:
-                            logger.warning(
-                                "[pixivdirect] Failed to cache illust %s: %s",
-                                target_id,
-                                exc,
+                        if local_paths:
+                            await self._cache_illust_result(
+                                event,
+                                path=local_paths[0],
+                                caption=caption,
+                                illust=illust,
+                                tags=tags,
+                                illust_id=int(target_id)
+                                if target_id.isdigit()
+                                else None,
+                                author=user,
+                                log_target=target_id,
                             )
                     return
                 except Exception as exc:
@@ -1643,6 +1669,9 @@ class CommandHandler:
         quality: str = "original",
     ) -> tuple[str, str | None]:
         """Enqueue random bookmark items to cache."""
+        from .constants import MULTI_IMAGE_THRESHOLD, RANDOM_DOWNLOAD_CONCURRENCY
+        from .pixivSDK import _pick_illust_image_urls
+
         latest_refresh_token = refresh_token
         user_cache = self._config.random_cache.setdefault(user_key, {})
         queue = user_cache.setdefault(DEFAULT_POOL_KEY, [])
@@ -1721,6 +1750,7 @@ class CommandHandler:
                     "matched_count": data.get("matched_count"),
                     "pages_scanned": data.get("pages_scanned"),
                     "image_url": image_url,
+                    "illust": illust_data,
                     "access_token": random_result.get("access_token"),
                     "refresh_token": latest_refresh_token,
                     "page_count": illust_data.get("page_count", 1),
@@ -1732,20 +1762,42 @@ class CommandHandler:
         if not pending_items:
             return latest_refresh_token, "未找到符合筛选条件的收藏图片。"
 
-        from .constants import RANDOM_DOWNLOAD_CONCURRENCY
-
         semaphore = asyncio.Semaphore(RANDOM_DOWNLOAD_CONCURRENCY)
 
         async def build_cache_item(item: dict[str, Any]) -> dict[str, Any]:
+            image_urls = (
+                _pick_illust_image_urls(item.get("illust", {}), quality)
+                if isinstance(item.get("illust"), dict)
+                else []
+            )
+            selected_urls = image_urls[:MULTI_IMAGE_THRESHOLD] if image_urls else []
+            primary_url = selected_urls[0] if selected_urls else str(item["image_url"])
+
             async with semaphore:
                 local_path = await self._image.download_image_to_cache(
-                    str(item["image_url"]),
+                    primary_url,
                     access_token=(
                         str(item["access_token"]) if item.get("access_token") else None
                     ),
                     refresh_token=str(item["refresh_token"]),
                     name_prefix=f"bookmark_{item['illust_id'] or 'unknown'}",
                 )
+
+            extra_image_paths: list[str] = []
+            for index, extra_url in enumerate(selected_urls[1:], start=1):
+                async with semaphore:
+                    extra_path = await self._image.download_image_to_cache(
+                        extra_url,
+                        access_token=(
+                            str(item["access_token"])
+                            if item.get("access_token")
+                            else None
+                        ),
+                        refresh_token=str(item["refresh_token"]),
+                        name_prefix=f"bookmark_{item['illust_id'] or 'unknown'}_{index}",
+                    )
+                extra_image_paths.append(extra_path)
+
             caption = format_random_bookmark(
                 item,
                 matched_count=item.get("matched_count"),
@@ -1761,6 +1813,7 @@ class CommandHandler:
                     author_id=item.get("author_id"),
                     author_name=str(item.get("author_name") or ""),
                     page_count=item.get("page_count", 1),
+                    extra_image_paths=extra_image_paths,
                 ),
                 "title": str(item.get("title") or "（无标题）"),
                 "total_view": item.get("total_view"),
