@@ -2,11 +2,16 @@
 
 PixivDirect 插件，用于直连访问 Pixiv，支持查询作品详情、作者信息和随机获取收藏图片。
 
-当前版本：`v1.8.11`
+当前版本：`v1.8.12`
 
 ## 更新日志
 
 README 中仅保留近期版本摘要，完整历史请见 [CHANGELOG.md](./CHANGELOG.md)。
+
+### v1.8.12
+
+- 优化群聊 R-18 自动打码流程：分割前会按像素上限自动缩放，降低超大图片的内存占用
+- 打码掩码改为逐个回传并即时处理，避免一次性堆积掩码导致内存峰值过高
 
 ### v1.8.11
 
@@ -623,7 +628,7 @@ tail -f {astrbot_data_path}/logs/astrbot.log | grep pixivdirect
 ## 开发信息
 
 - **作者**：Sagiri777
-- **版本**：v1.8.11
+- **版本**：v1.8.12
 - **仓库**：https://github.com/Sagiri777/astrbot_plugin_pixivdirect
 - **依赖**：requests, astrbot-api, Pillow
 

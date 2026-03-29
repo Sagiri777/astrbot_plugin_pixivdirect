@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.8.12] - 2026-03-29
+
+### Changed
+- 哈基米打码分割前会按像素上限自动缩放输入，降低超大图片触发高内存占用的风险
+
+### Fixed
+- 打码流程改为逐个掩码回传到 CPU 并即时处理，避免一次性加载全部掩码造成内存峰值过高
+
 ## [1.8.11] - 2026-03-29
 
 ### Changed
