@@ -219,13 +219,46 @@ STAGE_EMOJIS: dict[str, list[str]] = {
     "help": ["吃瓜", "暗中观察"],  # 帮助阶段
 }
 
-# Configurable constants (can be modified via commands)
+NON_CONFIGURABLE_CONSTANTS: frozenset[str] = frozenset(
+    {
+        "DNS_REFRESH_INTERVAL_SECONDS",
+        "DNS_REFRESH_RETRY_SECONDS",
+        "DEFAULT_SCAN_PAGES",
+        "MAX_IMAGES_PER_ILLUST",
+    }
+)
+
+
+def constant_config_key(name: str) -> str:
+    if name.endswith("_SECONDS"):
+        name = name[: -len("_SECONDS")]
+    return name.lower()
+
+
+def _is_configurable_constant(name: str, value: Any) -> bool:
+    return (
+        name.isupper()
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and name not in NON_CONFIGURABLE_CONSTANTS
+    )
+
+
+# Configurable constants are auto-generated from numeric runtime constants.
 CONFIGURABLE_CONSTANTS: dict[str, Any] = {
-    "idle_cache_interval": IDLE_CACHE_INTERVAL_SECONDS,
-    "idle_cache_count": IDLE_CACHE_COUNT,
-    "default_cache_size": DEFAULT_CACHE_SIZE,
-    "max_random_pages": MAX_RANDOM_PAGES,
-    "min_command_interval": MIN_COMMAND_INTERVAL_SECONDS,
-    "max_unique_scan_pages": MAX_UNIQUE_SCAN_PAGES,
-    "multi_image_threshold": MULTI_IMAGE_THRESHOLD,
+    constant_config_key(name): value
+    for name, value in globals().items()
+    if _is_configurable_constant(name, value)
 }
+
+CONFIGURABLE_CONSTANT_NAMES: dict[str, str] = {
+    constant_config_key(name): name
+    for name, value in globals().items()
+    if _is_configurable_constant(name, value)
+}
+
+CONFIGURABLE_CONSTANT_ALIASES: dict[str, str] = {}
+for _config_key, _constant_name in CONFIGURABLE_CONSTANT_NAMES.items():
+    CONFIGURABLE_CONSTANT_ALIASES[_config_key] = _config_key
+    CONFIGURABLE_CONSTANT_ALIASES[_constant_name] = _config_key
+    CONFIGURABLE_CONSTANT_ALIASES[_constant_name.lower()] = _config_key

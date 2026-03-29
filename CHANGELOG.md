@@ -16,6 +16,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.9.0] - 2026-03-30
+
+### Added
+- 新增 R-18 全图模糊打码模式，支持按群聊或私聊用户分别设置 `off`、`hajimi`、`blur` 模式
+- 新增 `r18 mosaic strength 1-100` 命令，可为不同群聊或用户分别设置全图模糊强度
+
+### Changed
+- 哈基米打码相关依赖改为可选安装，默认安装仅保留基础运行依赖
+- `r18` 帮助和状态输出补充打码模式与全图模糊强度说明
+
+### Fixed
+- 当哈基米打码依赖缺失或处理失败时，发送链路现在会自动回退到全图模糊，避免直接发送原图
+
+## [1.8.13] - 2026-03-30
+
+### Changed
+- `/pixiv config list` 改为从 `constants.py` 自动生成可配置常量列表，减少新增运行时常量后命令侧遗漏同步的问题
+- `/pixiv config get/set/reset` 现同时支持命令 key 和原始常量名（如 `idle_cache_interval` 与 `IDLE_CACHE_INTERVAL_SECONDS`）
+
+### Fixed
+- 修复部分运行时常量虽可在配置命令中看到但实际未走自定义配置读取的问题
+- 收紧常量配置查看权限，`/pixiv config` 相关查看与修改操作均仅允许 AstrBot 管理员执行
+
 ## [1.8.12] - 2026-03-29
 
 ### Changed

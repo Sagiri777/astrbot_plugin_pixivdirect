@@ -969,7 +969,12 @@ def pixiv(
 
         # Extended scan for unique mode
         extended_scan = params.get("extended_scan", False)
-        max_scan_pages = 9 if extended_scan else max_pages
+        max_unique_scan_pages = 9
+        if extended_scan and params.get("max_unique_scan_pages") is not None:
+            max_unique_scan_pages = max(
+                1, int(str(params.get("max_unique_scan_pages")))
+            )
+        max_scan_pages = max_unique_scan_pages if extended_scan else max_pages
         status_code = 200
 
         # Collect all candidates for thorough random mode

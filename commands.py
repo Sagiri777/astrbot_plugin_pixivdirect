@@ -10,8 +10,14 @@ from astrbot.api.event import AstrMessageEvent
 from .cache_manager import CacheManager
 from .config_manager import ConfigManager
 from .constants import (
+    CONFIGURABLE_CONSTANT_ALIASES,
+    CONFIGURABLE_CONSTANT_NAMES,
+    CONFIGURABLE_CONSTANTS,
     DEFAULT_POOL_KEY,
     MAX_RANDOM_WARMUP,
+    MAX_UNIQUE_SCAN_PAGES,
+    MULTI_IMAGE_THRESHOLD,
+    RANDOM_DOWNLOAD_CONCURRENCY,
     SEARCH_DEFAULT_LIMIT,
     SEARCH_DURATION_OPTIONS,
     SEARCH_MAX_LIMIT,
@@ -93,6 +99,38 @@ class CommandHandler:
             self._config.get_constant("default_cache_size", self._default_cache_size)
         )
 
+    def _get_max_random_warmup(self) -> int:
+        return int(self._config.get_constant("max_random_warmup", MAX_RANDOM_WARMUP))
+
+    def _get_max_unique_scan_pages(self) -> int:
+        return int(
+            self._config.get_constant("max_unique_scan_pages", MAX_UNIQUE_SCAN_PAGES)
+        )
+
+    def _get_multi_image_threshold(self) -> int:
+        return int(
+            self._config.get_constant("multi_image_threshold", MULTI_IMAGE_THRESHOLD)
+        )
+
+    def _get_random_download_concurrency(self) -> int:
+        return max(
+            1,
+            int(
+                self._config.get_constant(
+                    "random_download_concurrency",
+                    RANDOM_DOWNLOAD_CONCURRENCY,
+                )
+            ),
+        )
+
+    def _get_search_default_limit(self) -> int:
+        return int(
+            self._config.get_constant("search_default_limit", SEARCH_DEFAULT_LIMIT)
+        )
+
+    def _get_search_max_limit(self) -> int:
+        return int(self._config.get_constant("search_max_limit", SEARCH_MAX_LIMIT))
+
     def _mark_sent_illust_if_needed(self, user_id: str, item: dict[str, Any]) -> bool:
         if not self._config.is_unique_enabled_for_user(user_id):
             return False
@@ -110,6 +148,46 @@ class CommandHandler:
         if value in cls._FALSE_VALUES:
             return False
         return None
+
+    @staticmethod
+    def _r18_mosaic_entity_key(event: AstrMessageEvent) -> str:
+        group_id = event.get_group_id()
+        if group_id:
+            return f"group:{group_id}"
+        return f"user:{user_key(event)}"
+
+    @staticmethod
+    def _r18_mosaic_scope_label(event: AstrMessageEvent) -> str:
+        return "本群" if event.get_group_id() else "当前用户"
+
+    @staticmethod
+    def _parse_blur_strength(raw_value: str) -> int | None:
+        try:
+            strength = int(raw_value)
+        except ValueError:
+            return None
+        if 1 <= strength <= 100:
+            return strength
+        return None
+
+    @staticmethod
+    def _mosaic_mode_display_name(mode: str) -> str:
+        return {
+            "off": "关闭",
+            "hajimi": "哈基米打码",
+            "blur": "全图模糊",
+        }.get(mode, mode)
+
+    def _get_effective_r18_mosaic_mode(self, event: AstrMessageEvent) -> str:
+        entity_key = self._r18_mosaic_entity_key(event)
+        mode = self._config.get_r18_mosaic_mode(entity_key)
+        if mode in {"hajimi", "blur"}:
+            return mode
+
+        group_id = event.get_group_id()
+        if group_id and self._config.is_r18_mosaic_enabled_in_group(str(group_id)):
+            return "hajimi"
+        return "off"
 
     @staticmethod
     def _build_cache_item(
@@ -304,15 +382,43 @@ class CommandHandler:
             ):
                 yield result_item
 
-    @staticmethod
-    def _parse_warmup_count(filter_params: dict[str, Any]) -> int:
+    def _parse_warmup_count(self, filter_params: dict[str, Any]) -> int:
         raw_warmup = filter_params.pop("warmup", None)
         if raw_warmup is None:
             return 2
         try:
-            return max(1, min(MAX_RANDOM_WARMUP, int(str(raw_warmup))))
+            return max(1, min(self._get_max_random_warmup(), int(str(raw_warmup))))
         except ValueError:
             return 2
+
+    @staticmethod
+    def _resolve_config_key(raw_key: str) -> str | None:
+        normalized_key = CONFIGURABLE_CONSTANT_ALIASES.get(raw_key)
+        if normalized_key is not None:
+            return normalized_key
+        return CONFIGURABLE_CONSTANT_ALIASES.get(raw_key.lower())
+
+    @staticmethod
+    def _parse_config_value(raw_value: str, default_value: Any) -> Any | None:
+        value = raw_value.strip()
+        if isinstance(default_value, bool):
+            normalized = value.lower()
+            if normalized in CommandHandler._TRUE_VALUES:
+                return True
+            if normalized in CommandHandler._FALSE_VALUES:
+                return False
+            return None
+        if isinstance(default_value, int):
+            try:
+                return int(value)
+            except ValueError:
+                return None
+        if isinstance(default_value, float):
+            try:
+                return float(value)
+            except ValueError:
+                return None
+        return value if isinstance(default_value, str) else None
 
     def _resolve_shared_target(
         self,
@@ -420,38 +526,67 @@ class CommandHandler:
             return image_path
 
         group_id = event.get_group_id()
-        if not group_id or not self._cache.is_r18_item(item):
+        if not self._cache.is_r18_item(item):
             return image_path
 
-        if not self._config.is_r18_mosaic_enabled_in_group(str(group_id)):
+        mode = self._get_effective_r18_mosaic_mode(event)
+        if mode == "off":
             logger.info(
-                "[pixivdirect] R-18 image %s in group %s will be sent without mosaic",
+                "[pixivdirect] R-18 image %s in context %s will be sent without censor",
                 image_path,
-                group_id,
+                group_id if group_id else user_key(event),
             )
             return image_path
+
+        illust_id = item.get("illust_id")
+        entity_key = self._r18_mosaic_entity_key(event)
+        blur_strength = self._config.get_r18_mosaic_strength(entity_key)
+        name_prefix = (
+            f"r18mosaic_{illust_id}"
+            if isinstance(illust_id, int)
+            else "r18mosaic_image"
+        )
 
         try:
-            illust_id = item.get("illust_id")
-            name_prefix = (
-                f"r18mosaic_{illust_id}"
-                if isinstance(illust_id, int)
-                else "r18mosaic_image"
-            )
             logger.info(
-                "[pixivdirect] Applying group R-18 mosaic for illust_id=%s group=%s path=%s",
+                "[pixivdirect] Applying R-18 censor for illust_id=%s mode=%s strength=%s target=%s path=%s",
                 illust_id,
-                group_id,
+                mode,
+                blur_strength,
+                group_id if group_id else user_key(event),
                 image_path,
             )
-            return await self._image.create_mosaic_image(
+            return await self._image.create_censored_image(
                 image_path,
                 name_prefix=name_prefix,
+                mode=mode,
+                blur_strength=blur_strength,
             )
         except Exception as exc:
             logger.warning(
-                "[pixivdirect] Failed to mosaic image %s: %s", image_path, exc
+                "[pixivdirect] Failed to apply %s censor to image %s: %s",
+                mode,
+                image_path,
+                exc,
             )
+            if mode == "hajimi":
+                try:
+                    logger.warning(
+                        "[pixivdirect] Falling back to blur censor for image %s",
+                        image_path,
+                    )
+                    return await self._image.create_censored_image(
+                        image_path,
+                        name_prefix=f"{name_prefix}_fallback",
+                        mode="blur",
+                        blur_strength=self._config.get_r18_mosaic_strength(entity_key),
+                    )
+                except Exception as fallback_exc:
+                    logger.warning(
+                        "[pixivdirect] Blur fallback also failed for image %s: %s",
+                        image_path,
+                        fallback_exc,
+                    )
             return image_path
 
     async def _build_text_image_results(
@@ -784,18 +919,18 @@ class CommandHandler:
             quality = self._config.get_image_quality(entity_key)
 
             # Import helper for multi-image
-            from .constants import MULTI_IMAGE_THRESHOLD
             from .pixivSDK import _pick_illust_image_urls
 
             all_image_urls = _pick_illust_image_urls(illust, quality)
+            multi_image_threshold = self._get_multi_image_threshold()
 
             if all_image_urls:
                 try:
-                    if page_count <= MULTI_IMAGE_THRESHOLD:
+                    if page_count <= multi_image_threshold:
                         # Download and send all images directly
                         downloaded_paths: list[str] = []
                         for i, img_url in enumerate(
-                            all_image_urls[:MULTI_IMAGE_THRESHOLD]
+                            all_image_urls[:multi_image_threshold]
                         ):
                             try:
                                 local_path = await self._image.download_image_to_cache(
@@ -1001,19 +1136,60 @@ class CommandHandler:
         # Handle r18 config
         if len(args) >= 2 and args[1].lower() == "r18":
             group_id = event.get_group_id()
-            if not group_id:
-                yield event.plain_result("❌ 此命令仅可在群聊中使用。")
-                return
-
-            group_id_str = str(group_id)
+            entity_key = self._r18_mosaic_entity_key(event)
+            scope_label = self._r18_mosaic_scope_label(event)
+            group_id_str = str(group_id) if group_id else None
             if len(args) >= 3:
-                if not event.is_admin():
+                setting = args[2].lower()
+                is_group_only_setting = setting in {"display", "tag"} or (
+                    setting == "mosaic"
+                    and len(args) >= 4
+                    and args[3].lower() not in {"mode", "strength"}
+                )
+                if is_group_only_setting and not group_id:
+                    yield event.plain_result(
+                        "❌ `/pixiv r18 true/false` 和 `/pixiv r18 tag true/false` 仅可在群聊中使用。"
+                    )
+                    return
+
+                if group_id and not event.is_admin():
                     yield event.plain_result(
                         "❌ 仅 AstrBot 管理员可修改 R-18 群聊设置。"
                     )
                     return
 
-                setting = args[2].lower()
+                if setting == "mosaic" and len(args) >= 5:
+                    mosaic_subcommand = args[3].lower()
+                    if mosaic_subcommand == "mode":
+                        mode = args[4].lower()
+                        if mode not in {"off", "hajimi", "blur"}:
+                            yield event.plain_result(
+                                "❌ 无效的打码模式，请使用 off/hajimi/blur。"
+                            )
+                            return
+                        self._config.r18_mosaic_mode[entity_key] = mode
+                        if group_id_str:
+                            self._config.r18_mosaic_in_group[group_id_str] = (
+                                mode != "off"
+                            )
+                            await self._config.save_r18_mosaic_config()
+                        await self._config.save_r18_mosaic_mode_config()
+                        yield event.plain_result(
+                            f"✅ 已设置{scope_label} R-18 打码模式为：{self._mosaic_mode_display_name(mode)}"
+                        )
+                        return
+                    if mosaic_subcommand == "strength":
+                        strength = self._parse_blur_strength(args[4])
+                        if strength is None:
+                            yield event.plain_result("❌ 模糊强度必须是 1-100 的整数。")
+                            return
+                        self._config.r18_mosaic_strength[entity_key] = strength
+                        await self._config.save_r18_mosaic_strength_config()
+                        yield event.plain_result(
+                            f"✅ 已设置{scope_label}全图模糊强度为：{strength}"
+                        )
+                        return
+
                 if len(args) >= 4 and setting in {"tag", "mosaic"}:
                     value = args[3].lower()
                 else:
@@ -1025,29 +1201,59 @@ class CommandHandler:
                     yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
                     return
                 if setting == "display":
+                    assert group_id_str is not None
                     self._config.r18_in_group[group_id_str] = enabled
                     await self._config.save_r18_config()
                     action = "开启" if enabled else "关闭"
                     yield event.plain_result(f"✅ 已{action}群聊 R-18 内容显示。")
                     return
                 if setting == "tag":
+                    assert group_id_str is not None
                     self._config.r18_tags_in_group[group_id_str] = enabled
                     await self._config.save_r18_tag_config()
                     action = "显示" if enabled else "隐藏"
                     yield event.plain_result(f"✅ 已设置群聊 R-18 标签为：{action}")
                     return
                 if setting == "mosaic":
+                    if group_id_str is None:
+                        yield event.plain_result(
+                            "❌ 私聊请使用 `/pixiv r18 mosaic mode off|hajimi|blur`。"
+                        )
+                        return
                     self._config.r18_mosaic_in_group[group_id_str] = enabled
+                    self._config.r18_mosaic_mode[entity_key] = (
+                        self._config.get_r18_mosaic_mode(entity_key)
+                        if enabled
+                        and self._config.get_r18_mosaic_mode(entity_key)
+                        in {"hajimi", "blur"}
+                        else ("hajimi" if enabled else "off")
+                    )
                     await self._config.save_r18_mosaic_config()
+                    await self._config.save_r18_mosaic_mode_config()
                     action = "开启" if enabled else "关闭"
                     yield event.plain_result(f"✅ 已{action}群聊 R-18 图片自动打码。")
                     return
 
                 yield event.plain_result(
-                    "❌ 用法：/pixiv random r18 true/false 或 /pixiv random r18 tag|mosaic true/false"
+                    "❌ 用法：/pixiv random r18 true/false、/pixiv random r18 tag true/false、"
+                    "/pixiv random r18 mosaic true/false、"
+                    "/pixiv random r18 mosaic mode off|hajimi|blur、"
+                    "/pixiv random r18 mosaic strength 1-100"
                 )
                 return
             else:
+                mode = self._get_effective_r18_mosaic_mode(event)
+                strength = self._config.get_r18_mosaic_strength(entity_key)
+                if group_id_str is None:
+                    yield event.plain_result(
+                        "ℹ️ 当前用户 R-18 打码设置：\n"
+                        f"- 打码模式: {self._mosaic_mode_display_name(mode)}\n"
+                        f"- 全图模糊强度: {strength}\n"
+                        "- 使用 /pixiv random r18 mosaic mode off|hajimi|blur 控制私聊打码模式\n"
+                        "- 使用 /pixiv random r18 mosaic strength 1-100 控制私聊全图模糊强度"
+                    )
+                    return
+
                 status = (
                     "开启"
                     if self._config.is_r18_enabled_in_group(group_id_str)
@@ -1058,19 +1264,19 @@ class CommandHandler:
                     if self._config.is_r18_tags_visible_in_group(group_id_str)
                     else "隐藏"
                 )
-                mosaic_status = (
-                    "开启"
-                    if self._config.is_r18_mosaic_enabled_in_group(group_id_str)
-                    else "关闭"
-                )
+                mosaic_status = "开启" if mode != "off" else "关闭"
                 yield event.plain_result(
                     "ℹ️ 群聊 R-18 设置：\n"
                     f"- 图片显示: {status}\n"
                     f"- 标签显示: {tag_status}\n"
                     f"- 自动打码: {mosaic_status}\n"
+                    f"- 打码模式: {self._mosaic_mode_display_name(mode)}\n"
+                    f"- 全图模糊强度: {strength}\n"
                     "- 使用 /pixiv random r18 true/false 控制图片显示\n"
                     "- 使用 /pixiv random r18 tag true/false 控制标签显示\n"
-                    "- 使用 /pixiv random r18 mosaic true/false 控制自动打码"
+                    "- 使用 /pixiv random r18 mosaic true/false 控制自动打码\n"
+                    "- 使用 /pixiv random r18 mosaic mode off|hajimi|blur 控制打码模式\n"
+                    "- 使用 /pixiv random r18 mosaic strength 1-100 控制全图模糊强度"
                 )
                 return
 
@@ -1419,65 +1625,72 @@ class CommandHandler:
         # Handle config command (admin only)
         if len(args) >= 2 and args[1].lower() == "config":
             if not event.is_admin():
-                yield event.plain_result("❌ 仅 AstrBot 管理员可修改配置。")
+                yield event.plain_result("❌ 仅 AstrBot 管理员可查看或修改常量配置。")
                 return
-
-            from .constants import CONFIGURABLE_CONSTANTS
 
             if len(args) >= 3 and args[2].lower() == "list":
                 config_text = "📋 可配置常量：\n"
                 for key, default in CONFIGURABLE_CONSTANTS.items():
+                    constant_name = CONFIGURABLE_CONSTANT_NAMES[key]
                     custom = self._config.custom_constants.get(key)
                     if custom is not None:
-                        config_text += f"- {key}: {custom} (默认: {default})\n"
+                        config_text += (
+                            f"- {key} ({constant_name}): {custom} (默认: {default})\n"
+                        )
                     else:
-                        config_text += f"- {key}: {default}\n"
+                        config_text += f"- {key} ({constant_name}): {default}\n"
                 yield event.plain_result(config_text.strip())
                 return
             elif len(args) >= 3 and args[2].lower() == "get":
                 if len(args) >= 4:
-                    key = args[3]
-                    if key in CONFIGURABLE_CONSTANTS:
+                    key = self._resolve_config_key(args[3])
+                    if key is not None:
                         value = self._config.get_constant(
                             key, CONFIGURABLE_CONSTANTS[key]
                         )
-                        yield event.plain_result(f"ℹ️ {key} = {value}")
+                        constant_name = CONFIGURABLE_CONSTANT_NAMES[key]
+                        yield event.plain_result(f"ℹ️ {key} ({constant_name}) = {value}")
                     else:
-                        yield event.plain_result(f"❌ 未知配置项：{key}")
+                        yield event.plain_result(f"❌ 未知配置项：{args[3]}")
                 else:
                     yield event.plain_result("❌ 用法：/pixiv config get <key>")
                 return
             elif len(args) >= 3 and args[2].lower() == "set":
                 if len(args) >= 5:
-                    key = args[3]
+                    key = self._resolve_config_key(args[3])
                     value_str = args[4]
-                    if key not in CONFIGURABLE_CONSTANTS:
-                        yield event.plain_result(f"❌ 未知配置项：{key}")
+                    if key is None:
+                        yield event.plain_result(f"❌ 未知配置项：{args[3]}")
                         return
-                    try:
-                        # Try to parse as number
-                        if "." in value_str:
-                            value = float(value_str)
-                        else:
-                            value = int(value_str)
-                    except ValueError:
-                        yield event.plain_result("❌ 值必须是数字")
+                    default_value = CONFIGURABLE_CONSTANTS[key]
+                    value = self._parse_config_value(value_str, default_value)
+                    if value is None:
+                        expected_type = type(default_value).__name__
+                        yield event.plain_result(
+                            f"❌ 值类型错误，{key} 需要 {expected_type}"
+                        )
                         return
                     self._config.custom_constants[key] = value
                     await self._config.save_custom_constants()
-                    yield event.plain_result(f"✅ 已设置 {key} = {value}")
+                    constant_name = CONFIGURABLE_CONSTANT_NAMES[key]
+                    yield event.plain_result(
+                        f"✅ 已设置 {key} ({constant_name}) = {value}"
+                    )
                 else:
                     yield event.plain_result("❌ 用法：/pixiv config set <key> <value>")
                 return
             elif len(args) >= 3 and args[2].lower() == "reset":
                 if len(args) >= 4:
-                    key = args[3]
-                    if key in CONFIGURABLE_CONSTANTS:
+                    key = self._resolve_config_key(args[3])
+                    if key is not None:
                         self._config.custom_constants.pop(key, None)
                         await self._config.save_custom_constants()
-                        yield event.plain_result(f"✅ 已重置 {key} 为默认值")
+                        constant_name = CONFIGURABLE_CONSTANT_NAMES[key]
+                        yield event.plain_result(
+                            f"✅ 已重置 {key} ({constant_name}) 为默认值"
+                        )
                     else:
-                        yield event.plain_result(f"❌ 未知配置项：{key}")
+                        yield event.plain_result(f"❌ 未知配置项：{args[3]}")
                 else:
                     # Reset all
                     self._config.custom_constants.clear()
@@ -1669,13 +1882,13 @@ class CommandHandler:
         quality: str = "original",
     ) -> tuple[str, str | None]:
         """Enqueue random bookmark items to cache."""
-        from .constants import MULTI_IMAGE_THRESHOLD, RANDOM_DOWNLOAD_CONCURRENCY
         from .pixivSDK import _pick_illust_image_urls
 
         latest_refresh_token = refresh_token
         user_cache = self._config.random_cache.setdefault(user_key, {})
         queue = user_cache.setdefault(DEFAULT_POOL_KEY, [])
         pending_items: list[dict[str, Any]] = []
+        multi_image_threshold = self._get_multi_image_threshold()
 
         # Get sent IDs for unique mode
         sent_ids = (
@@ -1689,6 +1902,7 @@ class CommandHandler:
                 call_params["exclude_ids"] = list(sent_ids)
             if extended_scan:
                 call_params["extended_scan"] = True
+                call_params["max_unique_scan_pages"] = self._get_max_unique_scan_pages()
             if thorough_random:
                 call_params["random"] = True
             call_params["quality"] = quality
@@ -1762,7 +1976,7 @@ class CommandHandler:
         if not pending_items:
             return latest_refresh_token, "未找到符合筛选条件的收藏图片。"
 
-        semaphore = asyncio.Semaphore(RANDOM_DOWNLOAD_CONCURRENCY)
+        semaphore = asyncio.Semaphore(self._get_random_download_concurrency())
 
         async def build_cache_item(item: dict[str, Any]) -> dict[str, Any]:
             image_urls = (
@@ -1770,7 +1984,7 @@ class CommandHandler:
                 if isinstance(item.get("illust"), dict)
                 else []
             )
-            selected_urls = image_urls[:MULTI_IMAGE_THRESHOLD] if image_urls else []
+            selected_urls = image_urls[:multi_image_threshold] if image_urls else []
             primary_url = selected_urls[0] if selected_urls else str(item["image_url"])
 
             async with semaphore:
@@ -1884,7 +2098,7 @@ class CommandHandler:
                 elif key == "limit":
                     try:
                         limit = int(value)
-                        if 0 < limit <= SEARCH_MAX_LIMIT:
+                        if 0 < limit <= self._get_search_max_limit():
                             options["limit"] = limit
                     except ValueError:
                         pass
@@ -1912,7 +2126,7 @@ class CommandHandler:
         # Parse options
         options = self._parse_search_options(option_tokens)
         page = options.get("page", 1)
-        limit = options.get("limit", SEARCH_DEFAULT_LIMIT)
+        limit = options.get("limit", self._get_search_default_limit())
 
         # Build search params
         search_params: dict[str, Any] = {
@@ -2032,7 +2246,7 @@ class CommandHandler:
             allow_translate=False,
         )
         page = options.get("page", 1)
-        limit = options.get("limit", SEARCH_DEFAULT_LIMIT)
+        limit = options.get("limit", self._get_search_default_limit())
 
         # Build search params
         search_params: dict[str, Any] = {"word": keyword}

@@ -2,11 +2,21 @@
 
 PixivDirect 插件，用于直连访问 Pixiv，支持查询作品详情、作者信息和随机获取收藏图片。
 
-当前版本：`v1.8.12`
+当前版本：`v1.9.0`
 
 ## 更新日志
 
 README 中仅保留近期 5 条版本摘要，完整历史请见 [CHANGELOG.md](./CHANGELOG.md)。
+
+### v1.9.0
+
+- 新增可选的 R-18 全图模糊打码模式，支持按群聊或私聊用户分别设置模糊强度
+- 哈基米打码依赖改为可选安装，缺失时会自动回退到全图模糊
+
+### v1.8.13
+
+- `/pixiv config` 现会自动生成可配置常量列表，并支持使用原始常量名查询或设置
+- 常量配置的查看与修改统一收紧为仅 AstrBot 管理员可执行
 
 ### v1.8.12
 
@@ -23,17 +33,6 @@ README 中仅保留近期 5 条版本摘要，完整历史请见 [CHANGELOG.md](
 - 优化空参数场景下的命令使用提示，避免子命令后只输入空格时继续按正常命令执行
 - 为常见子命令补充更明确的定向用法说明
 
-### v1.8.9
-
-- 修复 `/pixiv random` 命中多页作品时只发送首图的问题
-- 随机缓存现在会保存并复用多页作品的附加图片路径
-
-### v1.8.8
-
-- 优化 `commands.py` 中作品详情的缓存写入与多图发送流程，统一动图、少图、多图场景下的复用逻辑
-
-
-
 ## 功能特性
 
 - **用户认证**：通过 refresh_token 绑定 Pixiv 账号
@@ -43,7 +42,7 @@ README 中仅保留近期 5 条版本摘要，完整历史请见 [CHANGELOG.md](
 - **智能缓存**：统一缓存池 + 元数据筛选，精准快速匹配
 - **空闲缓存**：程序空闲时自动为所有用户预缓存随机图片
 - **收藏分享**：支持与其他用户分享收藏内容（可配置）
-- **R-18 管理**：群聊中可分别配置 R-18 图片显示、标签显示和自动打码
+- **R-18 管理**：支持配置群聊 R-18 图片显示、标签显示、打码模式与全图模糊强度
 - **频率限制**：内置请求频率控制，避免 API 限流
 - **DNS 优化**：支持 PixEz 风格的 DNS 代理，绕过地区限制
 - **动图支持**：PIL 渲染失败时自动回退 ffmpeg
@@ -59,7 +58,8 @@ README 中仅保留近期 5 条版本摘要，完整历史请见 [CHANGELOG.md](
 1. 已安装 AstrBot（版本 >= v4.5.0）
 2. 拥有 Pixiv 账号并获取 refresh_token
 3. （可选）安装 ffmpeg 以支持动图渲染
-4. 若启用 R-18 自动打码，需安装 `ultralytics`、`opencv-python`、`numpy`
+4. 使用全图模糊模式只需默认依赖
+5. 若要启用哈基米打码模式，需额外安装 `ultralytics`、`opencv-python`、`numpy`
 
 ### 获取 refresh_token
 
@@ -225,13 +225,17 @@ data/plugins/
 /pixiv random r18 true/false
 /pixiv random r18 tag true/false
 /pixiv random r18 mosaic true/false
+/pixiv random r18 mosaic mode off/hajimi/blur
+/pixiv random r18 mosaic strength 1-100
 ```
-控制群聊中 R-18 图片是否发送、标签是否显示，以及发送时是否自动打码。仅 AstrBot 管理员可修改此设置，不需要绑定 token。
+控制群聊中 R-18 图片是否发送、标签是否显示，以及发送时采用哪种打码模式。群聊中仅 AstrBot 管理员可修改；私聊中可为当前用户单独设置打码模式和模糊强度，不需要绑定 token。
 
 - **关闭时（默认）**：群聊中 `/pixiv random` 命中 R-18 图片时，仅发送作品说明文字，不发送图片
 - **开启时**：群聊中 `/pixiv random` 命中 R-18 图片时，会发送图片
 - **标签显示**：默认显示，可单独关闭后隐藏 R-18 图片消息中的 `🏷️` 标签行
-- **自动打码**：默认关闭，开启后群聊内发送的 R-18 图片会使用内置的 [AutoHajimiMosaic](https://github.com/frinkleko/AutoHajimiMosaic) 逻辑自动生成哈基米打码版本
+- **自动打码**：默认关闭，开启后可选择 `hajimi` 或 `blur`
+- **哈基米打码**：使用内置的 [AutoHajimiMosaic](https://github.com/frinkleko/AutoHajimiMosaic) 逻辑，若依赖未安装会自动回退到全图模糊
+- **全图模糊**：对整张图应用高斯模糊，支持 `1-100` 的强度设置
 - **私聊中**：无论此设置如何，R-18 图片均正常发送
 
 **群聊 `/pixiv random` 实际行为**：
@@ -257,6 +261,15 @@ data/plugins/
 
 # 开启群聊 R-18 自动打码
 /pixiv random r18 mosaic true
+
+# 设置群聊使用全图模糊模式
+/pixiv random r18 mosaic mode blur
+
+# 设置群聊全图模糊强度为 30
+/pixiv random r18 mosaic strength 30
+
+# 私聊中仅为自己设置哈基米打码
+/pixiv random r18 mosaic mode hajimi
 ```
 
 **注意**：通过 `/pixiv id i {illust_id}` 指定获取的图片不受此限制影响。
@@ -387,17 +400,15 @@ data/plugins/
 ```
 管理插件内部常量配置。
 
-**可配置项**：
+`/pixiv config list` 会根据 `constants.py` 中当前支持运行时覆盖的常量自动生成列表，是当前版本最准确的可配置项来源。
 
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `idle_cache_interval` | 900 | 空闲缓存执行间隔（秒） |
-| `idle_cache_count` | 5 | 空闲时每个用户缓存数量 |
-| `default_cache_size` | 10 | 每个用户默认维护的缓存数量 |
-| `max_random_pages` | 8 | 随机收藏最大扫描页数 |
-| `min_command_interval` | 2.0 | 用户命令最小间隔（秒） |
-| `max_unique_scan_pages` | 9 | 唯一模式最大扫描页数 |
-| `multi_image_threshold` | 3 | 多图片作品使用合并转发的阈值 |
+`get/set/reset` 同时支持命令 key 和原始常量名，例如：
+
+```text
+/pixiv config get idle_cache_interval
+/pixiv config get IDLE_CACHE_INTERVAL_SECONDS
+/pixiv config set random_download_concurrency 5
+```
 
 **示例**：
 ```
@@ -568,7 +579,7 @@ tail -f {astrbot_data_path}/logs/astrbot.log | grep pixivdirect
 ## 开发信息
 
 - **作者**：Sagiri777
-- **版本**：v1.8.12
+- **版本**：v1.9.0
 - **仓库**：https://github.com/Sagiri777/astrbot_plugin_pixivdirect
 - **依赖**：requests, astrbot-api, Pillow
 

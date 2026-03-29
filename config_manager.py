@@ -7,6 +7,8 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .constants import CONFIGURABLE_CONSTANT_ALIASES, CONFIGURABLE_CONSTANTS
+
 
 class ConfigManager:
     """Manages all configuration files for the Pixiv plugin."""
@@ -21,6 +23,10 @@ class ConfigManager:
         self._r18_config_file = plugin_data_dir / "r18_config.json"
         self._r18_tag_config_file = plugin_data_dir / "r18_tag_config.json"
         self._r18_mosaic_config_file = plugin_data_dir / "r18_mosaic_config.json"
+        self._r18_mosaic_mode_file = plugin_data_dir / "r18_mosaic_mode_config.json"
+        self._r18_mosaic_strength_file = (
+            plugin_data_dir / "r18_mosaic_strength_config.json"
+        )
         self._idle_cache_queue_file = plugin_data_dir / "idle_cache_queue.json"
         self._unique_config_file = plugin_data_dir / "unique_config.json"
         self._group_blocked_tags_file = plugin_data_dir / "group_blocked_tags.json"
@@ -36,6 +42,8 @@ class ConfigManager:
         self._r18_in_group: dict[str, bool] = {}
         self._r18_tags_in_group: dict[str, bool] = {}
         self._r18_mosaic_in_group: dict[str, bool] = {}
+        self._r18_mosaic_mode: dict[str, str] = {}
+        self._r18_mosaic_strength: dict[str, int] = {}
         self._random_unique: dict[str, str] = {}
         self._idle_cache_queue: dict[str, list[dict[str, Any]]] = {}
         self._group_blocked_tags: dict[str, list[str]] = {}
@@ -92,6 +100,14 @@ class ConfigManager:
     def group_blocked_tags(self) -> dict[str, list[str]]:
         return self._group_blocked_tags
 
+    @property
+    def r18_mosaic_mode(self) -> dict[str, str]:
+        return self._r18_mosaic_mode
+
+    @property
+    def r18_mosaic_strength(self) -> dict[str, int]:
+        return self._r18_mosaic_strength
+
     def is_r18_enabled_in_group(self, group_id: str) -> bool:
         return self._r18_in_group.get(group_id, False)
 
@@ -100,6 +116,14 @@ class ConfigManager:
 
     def is_r18_mosaic_enabled_in_group(self, group_id: str) -> bool:
         return self._r18_mosaic_in_group.get(group_id, False)
+
+    def get_r18_mosaic_mode(self, entity_key: str) -> str:
+        value = self._r18_mosaic_mode.get(entity_key, "off")
+        return value if value in {"off", "hajimi", "blur"} else "off"
+
+    def get_r18_mosaic_strength(self, entity_key: str) -> int:
+        value = self._r18_mosaic_strength.get(entity_key, 12)
+        return value if isinstance(value, int) and 1 <= value <= 100 else 12
 
     def is_unique_enabled_for_user(self, user_id: str) -> bool:
         return self._random_unique.get(user_id, "false") == "true"
@@ -257,6 +281,33 @@ class ConfigManager:
         return loaded
 
     @staticmethod
+    def _normalize_mosaic_mode_mapping(raw: dict[str, Any]) -> dict[str, str]:
+        loaded: dict[str, str] = {}
+        for key, value in raw.items():
+            if not isinstance(key, str) or not key:
+                continue
+            if not isinstance(value, str):
+                continue
+            normalized = value.strip().lower()
+            if normalized in {"off", "hajimi", "blur"}:
+                loaded[key] = normalized
+        return loaded
+
+    @staticmethod
+    def _normalize_mosaic_strength_mapping(raw: dict[str, Any]) -> dict[str, int]:
+        loaded: dict[str, int] = {}
+        for key, value in raw.items():
+            if not isinstance(key, str) or not key:
+                continue
+            try:
+                normalized = int(value)
+            except (TypeError, ValueError):
+                continue
+            if 1 <= normalized <= 100:
+                loaded[key] = normalized
+        return loaded
+
+    @staticmethod
     def _normalize_int_or_always(value: Any, fallback: int | str) -> int | str:
         if value == "always":
             return "always"
@@ -293,6 +344,8 @@ class ConfigManager:
         self._load_r18_config()
         self._load_r18_tag_config()
         self._load_r18_mosaic_config()
+        self._load_r18_mosaic_mode_config()
+        self._load_r18_mosaic_strength_config()
         self._load_idle_cache_queue()
         self._load_unique_config()
         self._load_group_blocked_tags()
@@ -393,6 +446,28 @@ class ConfigManager:
         )
         self._r18_mosaic_in_group = self._normalize_bool_mapping(raw)
 
+    def _load_r18_mosaic_mode_config(self) -> None:
+        raw = self._load_json_object(
+            self._r18_mosaic_mode_file,
+            default={},
+            create_log_label="default r18 mosaic mode config",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load r18 mosaic mode config, using default (off)."
+            ),
+        )
+        self._r18_mosaic_mode = self._normalize_mosaic_mode_mapping(raw)
+
+    def _load_r18_mosaic_strength_config(self) -> None:
+        raw = self._load_json_object(
+            self._r18_mosaic_strength_file,
+            default={},
+            create_log_label="default r18 mosaic strength config",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load r18 mosaic strength config, using default (12)."
+            ),
+        )
+        self._r18_mosaic_strength = self._normalize_mosaic_strength_mapping(raw)
+
     def _load_idle_cache_queue(self) -> None:
         raw = self._load_json_object(
             self._idle_cache_queue_file,
@@ -471,6 +546,22 @@ class ConfigManager:
                 self._r18_mosaic_config_file,
                 self._r18_mosaic_in_group,
                 log_label="r18 mosaic config",
+            )
+
+    async def save_r18_mosaic_mode_config(self) -> None:
+        async with self._cache_lock:
+            self._write_json_file(
+                self._r18_mosaic_mode_file,
+                self._r18_mosaic_mode,
+                log_label="r18 mosaic mode config",
+            )
+
+    async def save_r18_mosaic_strength_config(self) -> None:
+        async with self._cache_lock:
+            self._write_json_file(
+                self._r18_mosaic_strength_file,
+                self._r18_mosaic_strength,
+                log_label="r18 mosaic strength config",
             )
 
     async def save_idle_cache_queue(self) -> None:
@@ -578,7 +669,22 @@ class ConfigManager:
             ),
         )
 
-        self._custom_constants = raw
+        loaded: dict[str, Any] = {}
+        for key, value in raw.items():
+            if not isinstance(key, str):
+                continue
+            normalized_key = CONFIGURABLE_CONSTANT_ALIASES.get(key)
+            if normalized_key is None:
+                normalized_key = CONFIGURABLE_CONSTANT_ALIASES.get(key.lower())
+            if normalized_key is None:
+                continue
+
+            default_value = CONFIGURABLE_CONSTANTS[normalized_key]
+            coerced_value = self._coerce_constant_value(value, default_value)
+            if coerced_value is not None:
+                loaded[normalized_key] = coerced_value
+
+        self._custom_constants = loaded
 
     async def save_custom_constants(self) -> None:
         async with self._cache_lock:
@@ -590,4 +696,48 @@ class ConfigManager:
 
     def get_constant(self, key: str, default: Any = None) -> Any:
         """Get a constant value, checking custom constants first, then defaults."""
-        return self._custom_constants.get(key, default)
+        normalized_key = CONFIGURABLE_CONSTANT_ALIASES.get(key)
+        if normalized_key is None:
+            normalized_key = CONFIGURABLE_CONSTANT_ALIASES.get(key.lower(), key)
+        return self._custom_constants.get(normalized_key, default)
+
+    @staticmethod
+    def _coerce_constant_value(value: Any, default: Any) -> Any | None:
+        if isinstance(default, bool):
+            if isinstance(value, bool):
+                return value
+            if isinstance(value, str):
+                normalized = value.strip().lower()
+                if normalized in {"true", "1", "yes", "on"}:
+                    return True
+                if normalized in {"false", "0", "no", "off"}:
+                    return False
+            return None
+
+        if isinstance(default, int):
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float) and value.is_integer():
+                return int(value)
+            if isinstance(value, str):
+                try:
+                    return int(value.strip())
+                except ValueError:
+                    return None
+            return None
+
+        if isinstance(default, float):
+            if isinstance(value, bool):
+                return None
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                try:
+                    return float(value.strip())
+                except ValueError:
+                    return None
+            return None
+
+        return value if isinstance(value, type(default)) else None

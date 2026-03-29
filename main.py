@@ -28,7 +28,7 @@ from .pixivSDK import pixiv
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.8.12")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.9.0")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
