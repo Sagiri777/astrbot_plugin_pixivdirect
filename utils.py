@@ -360,6 +360,16 @@ HELP_MENU: list[dict[str, Any]] = [
                 "description": "设置群聊 R-18 图片是否自动打码",
                 "usage_key": "r18",
             },
+            {
+                "command": "/pixiv r18 mosaic mode off/hajimi/blur",
+                "description": "设置 R-18 打码模式，可选关闭、哈基米打码或全图模糊",
+                "usage_key": "r18",
+            },
+            {
+                "command": "/pixiv r18 mosaic strength 1-100",
+                "description": "设置全图模糊模式的强度，支持按群或私聊用户分别配置",
+                "usage_key": "r18",
+            },
         ],
     },
     {
@@ -458,6 +468,16 @@ def command_usage(command: str) -> str | None:
         lines.append("- /pixiv config get <key>  # 查看单个配置")
         lines.append("- /pixiv config set <key> <value>  # 修改配置")
         lines.append("- /pixiv config reset [key]  # 重置配置")
+    elif command == "r18":
+        lines.append("- /pixiv r18 true/false  # 群聊中控制是否发送 R-18 图片")
+        lines.append("- /pixiv r18 tag true/false  # 群聊中控制是否显示标签")
+        lines.append("- /pixiv r18 mosaic true/false  # 群聊中快速开启或关闭自动打码")
+        lines.append(
+            "- /pixiv r18 mosaic mode off/hajimi/blur  # 设置打码模式，私聊可为当前用户单独配置"
+        )
+        lines.append(
+            "- /pixiv r18 mosaic strength 1-100  # 设置全图模糊强度，私聊和群聊分别生效"
+        )
     elif descriptions:
         lines.append(f"说明：{descriptions[0]}")
 

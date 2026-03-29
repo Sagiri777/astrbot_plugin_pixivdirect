@@ -13,11 +13,9 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from PIL import Image, ImageSequence
+from PIL import Image, ImageFilter, ImageSequence
 
 from astrbot.api import logger
-
-from .hajimi_mosaic import apply_hajimi_mosaic_to_pil
 
 
 class ImageHandler:
@@ -30,6 +28,30 @@ class ImageHandler:
     ) -> None:
         self._cache_dir = cache_dir
         self._pixiv_call = pixiv_call_func
+
+    @staticmethod
+    def _apply_blur_to_pil(image: Image.Image, strength: int) -> Image.Image:
+        radius = max(1, min(100, strength)) / 2.0
+        return image.filter(ImageFilter.GaussianBlur(radius=radius))
+
+    @staticmethod
+    def _apply_hajimi_to_pil(image: Image.Image) -> Image.Image:
+        from .hajimi_mosaic import apply_hajimi_mosaic_to_pil
+
+        return apply_hajimi_mosaic_to_pil(image)
+
+    def _apply_censor_to_pil(
+        self,
+        image: Image.Image,
+        *,
+        mode: str,
+        blur_strength: int,
+    ) -> Image.Image:
+        if mode == "blur":
+            return self._apply_blur_to_pil(image, blur_strength)
+        if mode == "hajimi":
+            return self._apply_hajimi_to_pil(image)
+        raise ValueError(f"Unsupported censor mode: {mode}")
 
     @staticmethod
     def safe_filename_from_url(url: str, fallback: str) -> str:
@@ -240,24 +262,47 @@ class ImageHandler:
             if result.returncode != 0:
                 raise RuntimeError(f"ffmpeg 渲染动图失败: {result.stderr[:500]}")
 
+    async def create_censored_image(
+        self,
+        image_path: str,
+        *,
+        name_prefix: str,
+        mode: str,
+        blur_strength: int = 12,
+    ) -> str:
+        """Create a censored variant of an image for safer delivery."""
+        logger.info(
+            "[pixivdirect] Scheduling %s censor generation for %s",
+            mode,
+            image_path,
+        )
+        return await asyncio.to_thread(
+            self._create_censored_image_sync,
+            image_path,
+            name_prefix,
+            mode,
+            blur_strength,
+        )
+
     async def create_mosaic_image(
         self,
         image_path: str,
         *,
         name_prefix: str,
     ) -> str:
-        """Create a mosaiced variant of an image for group-safe delivery."""
-        logger.info("[pixivdirect] Scheduling mosaic generation for %s", image_path)
-        return await asyncio.to_thread(
-            self._create_mosaic_image_sync,
+        """Backward-compatible wrapper for Hajimi mosaic generation."""
+        return await self.create_censored_image(
             image_path,
-            name_prefix,
+            name_prefix=name_prefix,
+            mode="hajimi",
         )
 
-    def _create_mosaic_image_sync(
+    def _create_censored_image_sync(
         self,
         image_path: str,
         name_prefix: str,
+        mode: str,
+        blur_strength: int,
     ) -> str:
         source = Path(image_path)
         if not source.exists():
@@ -271,43 +316,72 @@ class ImageHandler:
         target_suffix = (
             suffix if suffix in {".gif", ".jpg", ".jpeg", ".png", ".webp"} else ".png"
         )
-        target = self._cache_dir / f"{name_prefix}_{digest}_mosaic{target_suffix}"
+        target = self._cache_dir / (
+            f"{name_prefix}_{digest}_{mode}_{blur_strength}{target_suffix}"
+        )
         if target.exists():
-            logger.info("[pixivdirect] Reusing existing mosaic cache %s", target)
+            logger.info("[pixivdirect] Reusing existing censored cache %s", target)
             return str(target)
 
         logger.info(
-            "[pixivdirect] Creating new mosaic cache %s from %s", target, source
+            "[pixivdirect] Creating new %s censored cache %s from %s",
+            mode,
+            target,
+            source,
         )
         with Image.open(source) as img:
             is_animated = bool(getattr(img, "is_animated", False))
             if is_animated:
                 logger.info(
-                    "[pixivdirect] Source image is animated, rendering mosaic GIF"
+                    "[pixivdirect] Source image is animated, rendering censored GIF"
                 )
-                self._save_animated_mosaic(img, target)
+                self._save_animated_censor(
+                    img,
+                    target,
+                    mode=mode,
+                    blur_strength=blur_strength,
+                )
             else:
                 frame = (
                     img.convert("RGBA") if img.mode == "RGBA" else img.convert("RGB")
                 )
-                mosaiced = apply_hajimi_mosaic_to_pil(frame)
-                self._save_single_frame(mosaiced, target, target_suffix)
+                censored = self._apply_censor_to_pil(
+                    frame,
+                    mode=mode,
+                    blur_strength=blur_strength,
+                )
+                self._save_single_frame(censored, target, target_suffix)
 
-        logger.info("[pixivdirect] Mosaic image saved to %s", target)
+        logger.info("[pixivdirect] Censored image saved to %s", target)
         return str(target)
 
-    def _save_animated_mosaic(self, image: Image.Image, target: Path) -> None:
+    def _save_animated_censor(
+        self,
+        image: Image.Image,
+        target: Path,
+        *,
+        mode: str,
+        blur_strength: int,
+    ) -> None:
         frames: list[Image.Image] = []
         durations: list[int] = []
         loop = int(image.info.get("loop", 0))
-        logger.info("[pixivdirect] Processing animated mosaic with loop=%s", loop)
+        logger.info(
+            "[pixivdirect] Processing animated %s censor with loop=%s",
+            mode,
+            loop,
+        )
 
         for frame in ImageSequence.Iterator(image):
             rgba = (
                 frame.convert("RGBA") if frame.mode == "RGBA" else frame.convert("RGB")
             )
-            mosaiced = apply_hajimi_mosaic_to_pil(rgba)
-            frames.append(mosaiced)
+            censored = self._apply_censor_to_pil(
+                rgba,
+                mode=mode,
+                blur_strength=blur_strength,
+            )
+            frames.append(censored)
             durations.append(
                 int(frame.info.get("duration", image.info.get("duration", 100)))
             )
