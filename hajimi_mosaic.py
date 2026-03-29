@@ -10,6 +10,7 @@ from astrbot.api import logger
 
 _SEGMENTATION_MODEL = None
 _HEAD_IMAGE: np.ndarray | None = None
+_MAX_SEGMENTATION_PIXELS = 1280 * 1280
 
 
 def _to_rgb(image: np.ndarray) -> np.ndarray:
@@ -71,6 +72,44 @@ def _segment_image(image_bgr: np.ndarray):
     )
 
 
+def _resize_for_segmentation(
+    image_bgr: np.ndarray,
+) -> tuple[np.ndarray, float]:
+    height, width = image_bgr.shape[:2]
+    current_pixels = height * width
+    if current_pixels <= _MAX_SEGMENTATION_PIXELS:
+        return image_bgr, 1.0
+
+    scale = (_MAX_SEGMENTATION_PIXELS / float(current_pixels)) ** 0.5
+    resized_width = max(1, int(width * scale))
+    resized_height = max(1, int(height * scale))
+    resized = cv2.resize(
+        image_bgr,
+        (resized_width, resized_height),
+        interpolation=cv2.INTER_AREA,
+    )
+    logger.info(
+        "[pixivdirect] Hajimi mosaic downsized segmentation input: %sx%s -> %sx%s",
+        width,
+        height,
+        resized_width,
+        resized_height,
+    )
+    return resized, scale
+
+
+def _restore_mask_size(mask: np.ndarray, target_shape: tuple[int, int]) -> np.ndarray:
+    target_height, target_width = target_shape
+    if mask.shape[:2] == (target_height, target_width):
+        return mask
+    restored = cv2.resize(
+        mask.astype(np.float32),
+        (target_width, target_height),
+        interpolation=cv2.INTER_NEAREST,
+    )
+    return restored
+
+
 def _apply_mask(
     image: np.ndarray,
     mask: np.ndarray,
@@ -111,7 +150,8 @@ def apply_hajimi_mosaic_to_pil(image: Image.Image) -> Image.Image:
     image_np = np.array(rgb_image)
     image_bgr = cv2.cvtColor(_to_rgb(image_np), cv2.COLOR_RGB2BGR)
 
-    segmentation_results = _segment_image(image_bgr)
+    segmentation_input, _ = _resize_for_segmentation(image_bgr)
+    segmentation_results = _segment_image(segmentation_input)
     result = segmentation_results[0]
     if not hasattr(result, "masks") or result.masks is None:
         logger.info(
@@ -119,15 +159,18 @@ def apply_hajimi_mosaic_to_pil(image: Image.Image) -> Image.Image:
         )
         return image.copy()
 
-    masks = result.masks.data.cpu().numpy()
-    if len(masks) == 0:
+    mask_tensor = result.masks.data
+    mask_count = int(mask_tensor.shape[0]) if mask_tensor.ndim >= 1 else 0
+    if mask_count == 0:
         logger.info("[pixivdirect] Hajimi mosaic skipped: mask count is 0")
         return image.copy()
 
-    logger.info("[pixivdirect] Hajimi mosaic applying %d masks", len(masks))
+    logger.info("[pixivdirect] Hajimi mosaic applying %d masks", mask_count)
     output_bgr = image_bgr.copy()
     head_image = _load_head_image()
-    for mask in masks:
+    for index in range(mask_count):
+        mask = mask_tensor[index].cpu().numpy()
+        mask = _restore_mask_size(mask, output_bgr.shape[:2])
         output_bgr = _apply_mask(output_bgr, mask, head_image)
 
     output_rgb = cv2.cvtColor(output_bgr, cv2.COLOR_BGR2RGB)
