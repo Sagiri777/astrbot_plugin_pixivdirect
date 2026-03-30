@@ -28,7 +28,7 @@ from .pixivSDK import pixiv
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.9.1")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.0")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -309,12 +309,14 @@ class PixivDirectPlugin(Star):
         user_queue = self._config_manager.idle_cache_queue.get(uid, [])
         filter_params = {"restrict": "public", "max_pages": 3}
         user_count = default_count
+        filter_source = "default"
 
         if user_queue:
             queue_item = user_queue[0]
             filter_params = queue_item.get("filter_params", filter_params)
             remaining = queue_item.get("remaining", 1)
             count = queue_item.get("count", 1)
+            filter_source = "queue"
 
             # Use user's count setting instead of hardcoded value
             if remaining == "always":
@@ -332,6 +334,11 @@ class PixivDirectPlugin(Star):
                 if not user_queue:
                     self._config_manager.idle_cache_queue.pop(uid, None)
                 await self._config_manager.save_idle_cache_queue()
+        else:
+            preferred_filter = self._config_manager.get_top_random_filter_for_user(uid)
+            if preferred_filter:
+                filter_params = preferred_filter
+                filter_source = "usage"
 
         # Use user_count instead of items_to_add
         items_to_add = user_count
@@ -355,10 +362,11 @@ class PixivDirectPlugin(Star):
                 filter_params.get("tag") or filter_params.get("author") or "default"
             )
             logger.info(
-                "[pixivdirect] Cached %d items for user %s (filter: %s)",
+                "[pixivdirect] Cached %d items for user %s (filter: %s, source: %s)",
                 items_to_add,
                 uid,
                 filter_desc,
+                filter_source,
             )
 
     @filter.command("pixiv")

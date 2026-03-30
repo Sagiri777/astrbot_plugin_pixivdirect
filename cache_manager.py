@@ -200,6 +200,12 @@ class CacheManager:
     @staticmethod
     def cache_key(filter_params: dict[str, Any]) -> str:
         """Generate a cache key from filter parameters."""
+        identity = CacheManager.normalize_random_filter_params(filter_params)
+        return json.dumps(identity, ensure_ascii=False, sort_keys=True)
+
+    @staticmethod
+    def normalize_random_filter_params(filter_params: dict[str, Any]) -> dict[str, Any]:
+        """Normalize random filter parameters for cache/stat identity."""
         identity = {
             "tag": filter_params.get("tag"),
             "author": filter_params.get("author"),
@@ -207,7 +213,9 @@ class CacheManager:
             "restrict": filter_params.get("restrict", "public"),
             "max_pages": filter_params.get("max_pages", 3),
         }
-        return json.dumps(identity, ensure_ascii=False, sort_keys=True)
+        return {
+            key: value for key, value in identity.items() if value not in (None, "")
+        }
 
     @staticmethod
     def parse_random_filter(

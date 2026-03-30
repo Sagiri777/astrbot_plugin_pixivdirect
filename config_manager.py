@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ class ConfigManager:
         self._group_blocked_tags_file = plugin_data_dir / "group_blocked_tags.json"
         self._sent_illust_ids_file = plugin_data_dir / "sent_illust_ids.json"
         self._image_quality_file = plugin_data_dir / "image_quality_config.json"
+        self._random_usage_stats_file = plugin_data_dir / "random_usage_stats.json"
         self._custom_constants_file = plugin_data_dir / "custom_constants.json"
 
         # Configuration state
@@ -50,6 +52,7 @@ class ConfigManager:
         self._random_cache: dict[str, dict[str, list[dict[str, Any]]]] = {}
         self._sent_illust_ids: dict[str, set[int]] = {}
         self._image_quality_config: dict[str, str] = {}
+        self._random_usage_stats: dict[str, dict[str, dict[str, Any]]] = {}
         self._custom_constants: dict[str, Any] = {}
 
     @property
@@ -140,6 +143,10 @@ class ConfigManager:
     def custom_constants(self) -> dict[str, Any]:
         return self._custom_constants
 
+    @property
+    def random_usage_stats(self) -> dict[str, dict[str, dict[str, Any]]]:
+        return self._random_usage_stats
+
     def get_image_quality(self, entity_key: str) -> str:
         """Get image quality setting for an entity (user or group)."""
         return self._image_quality_config.get(entity_key, "original")
@@ -215,6 +222,76 @@ class ConfigManager:
             if isinstance(extra_image_paths, list)
             else [],
         }
+
+    @staticmethod
+    def _normalize_usage_daily_counts(raw: Any) -> dict[str, int]:
+        loaded: dict[str, int] = {}
+        if not isinstance(raw, dict):
+            return loaded
+
+        for day, count in raw.items():
+            if not isinstance(day, str):
+                continue
+            try:
+                datetime.strptime(day, "%Y-%m-%d")
+                normalized_count = int(count)
+            except (TypeError, ValueError):
+                continue
+            if normalized_count > 0:
+                loaded[day] = normalized_count
+        return loaded
+
+    @classmethod
+    def _normalize_random_usage_entry(cls, item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+
+        filter_params = item.get("filter_params")
+        if not isinstance(filter_params, dict) or not filter_params:
+            return None
+
+        daily_counts = cls._normalize_usage_daily_counts(item.get("daily_counts"))
+        return {
+            "filter_params": filter_params,
+            "daily_counts": daily_counts,
+        }
+
+    @staticmethod
+    def _recent_day_strings(window_days: int) -> set[str]:
+        today = datetime.now().date()
+        return {
+            (today - timedelta(days=offset)).isoformat()
+            for offset in range(max(1, window_days))
+        }
+
+    def _prune_random_usage_stats(self, *, window_days: int = 7) -> None:
+        keep_days = self._recent_day_strings(window_days)
+        pruned: dict[str, dict[str, dict[str, Any]]] = {}
+
+        for user_key, entries in self._random_usage_stats.items():
+            if not isinstance(user_key, str) or not isinstance(entries, dict):
+                continue
+            valid_entries: dict[str, dict[str, Any]] = {}
+            for filter_key, item in entries.items():
+                if not isinstance(filter_key, str):
+                    continue
+                normalized = self._normalize_random_usage_entry(item)
+                if normalized is None:
+                    continue
+                daily_counts = {
+                    day: count
+                    for day, count in normalized["daily_counts"].items()
+                    if day in keep_days
+                }
+                if not daily_counts:
+                    continue
+                valid_entries[filter_key] = {
+                    "filter_params": normalized["filter_params"],
+                    "daily_counts": daily_counts,
+                }
+            if valid_entries:
+                pruned[user_key] = valid_entries
+        self._random_usage_stats = pruned
 
     def _write_json_file(
         self,
@@ -351,6 +428,7 @@ class ConfigManager:
         self._load_group_blocked_tags()
         self._load_sent_illust_ids()
         self._load_image_quality_config()
+        self._load_random_usage_stats()
         self._load_custom_constants()
 
     def _load_tokens(self) -> None:
@@ -520,6 +598,32 @@ class ConfigManager:
                     loaded[group_id] = valid_tags
         self._group_blocked_tags = loaded
 
+    def _load_random_usage_stats(self) -> None:
+        raw = self._load_json_object(
+            self._random_usage_stats_file,
+            default={},
+            create_log_label="random usage stats",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load random usage stats, using empty stats."
+            ),
+        )
+
+        loaded: dict[str, dict[str, dict[str, Any]]] = {}
+        for user_key, entries in raw.items():
+            if not isinstance(user_key, str) or not isinstance(entries, dict):
+                continue
+            valid_entries: dict[str, dict[str, Any]] = {}
+            for filter_key, item in entries.items():
+                if not isinstance(filter_key, str):
+                    continue
+                normalized = self._normalize_random_usage_entry(item)
+                if normalized is not None and normalized["daily_counts"]:
+                    valid_entries[filter_key] = normalized
+            if valid_entries:
+                loaded[user_key] = valid_entries
+        self._random_usage_stats = loaded
+        self._prune_random_usage_stats()
+
     async def save_share_config(self) -> None:
         async with self._cache_lock:
             self._write_json_file(
@@ -658,6 +762,76 @@ class ConfigManager:
                 self._image_quality_config,
                 log_label="image quality config",
             )
+
+    async def save_random_usage_stats(self) -> None:
+        async with self._cache_lock:
+            self._prune_random_usage_stats()
+            self._write_json_file(
+                self._random_usage_stats_file,
+                self._random_usage_stats,
+                log_label="random usage stats",
+            )
+
+    async def record_random_filter_usage(
+        self,
+        *,
+        user_key: str,
+        filter_key: str,
+        filter_params: dict[str, Any],
+    ) -> None:
+        if not user_key or not filter_key or not filter_params:
+            return
+
+        today = datetime.now().date().isoformat()
+        user_stats = self._random_usage_stats.setdefault(user_key, {})
+        entry = user_stats.setdefault(
+            filter_key,
+            {
+                "filter_params": dict(filter_params),
+                "daily_counts": {},
+            },
+        )
+        entry["filter_params"] = dict(filter_params)
+        daily_counts = entry.setdefault("daily_counts", {})
+        if not isinstance(daily_counts, dict):
+            daily_counts = {}
+            entry["daily_counts"] = daily_counts
+        daily_counts[today] = int(daily_counts.get(today, 0)) + 1
+        await self.save_random_usage_stats()
+
+    def get_top_random_filter_for_user(
+        self, user_key: str, *, window_days: int = 7
+    ) -> dict[str, Any] | None:
+        user_stats = self._random_usage_stats.get(user_key)
+        if not isinstance(user_stats, dict):
+            return None
+
+        keep_days = self._recent_day_strings(window_days)
+        best_item: dict[str, Any] | None = None
+        best_total = 0
+        best_latest_day = ""
+
+        for item in user_stats.values():
+            normalized = self._normalize_random_usage_entry(item)
+            if normalized is None:
+                continue
+            daily_counts = normalized["daily_counts"]
+            total = sum(
+                count for day, count in daily_counts.items() if day in keep_days
+            )
+            if total <= 0:
+                continue
+            latest_day = max(
+                (day for day in daily_counts if day in keep_days), default=""
+            )
+            if total > best_total or (
+                total == best_total and latest_day > best_latest_day
+            ):
+                best_total = total
+                best_latest_day = latest_day
+                best_item = dict(normalized["filter_params"])
+
+        return best_item
 
     def _load_custom_constants(self) -> None:
         raw = self._load_json_object(

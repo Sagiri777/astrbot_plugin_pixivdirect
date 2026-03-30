@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.0] - 2026-03-30
+
+### Added
+- 新增最近 7 天 random 筛选条件使用统计，会同时记录用户自己使用和其他人通过共享使用其收藏时的筛选偏好
+
+### Changed
+- 闲时缓存在用户没有显式缓存队列时，现会优先为该用户预热最近 7 天内使用频率最高的 random 筛选条件
+- 新增 `random_usage_stats.json` 持久化文件，用于按天聚合 random 筛选条件使用次数
 ## [1.9.1] - 2026-03-30
 
 ### Fixed

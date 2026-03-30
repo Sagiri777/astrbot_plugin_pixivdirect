@@ -131,6 +131,18 @@ class CommandHandler:
     def _get_search_max_limit(self) -> int:
         return int(self._config.get_constant("search_max_limit", SEARCH_MAX_LIMIT))
 
+    async def _record_random_usage(
+        self, *, owner_user_key: str, filter_params: dict[str, Any]
+    ) -> None:
+        normalized_filter = self._cache.normalize_random_filter_params(filter_params)
+        if not normalized_filter:
+            return
+        await self._config.record_random_filter_usage(
+            user_key=owner_user_key,
+            filter_key=self._cache.cache_key(normalized_filter),
+            filter_params=normalized_filter,
+        )
+
     def _mark_sent_illust_if_needed(self, user_id: str, item: dict[str, Any]) -> bool:
         if not self._config.is_unique_enabled_for_user(user_id):
             return False
@@ -1752,6 +1764,9 @@ class CommandHandler:
                 target_user_key, cache_key, filter_params
             )
             if cached_item:
+                await self._record_random_usage(
+                    owner_user_key=target_user_key, filter_params=filter_params
+                )
                 await self._emoji.add_emoji_reaction(event, "random")
                 async for result in self._emit_random_item(
                     event,
@@ -1768,6 +1783,9 @@ class CommandHandler:
                     yield event.plain_result("❌ 该用户未登录 Pixiv。")
                     return
 
+                await self._record_random_usage(
+                    owner_user_key=target_user_key, filter_params=filter_params
+                )
                 warmup = self._parse_warmup_count(filter_params)
 
                 await self._emoji.add_emoji_reaction(event, "random")
@@ -1817,6 +1835,7 @@ class CommandHandler:
             return
 
         key = user_key(event)
+        await self._record_random_usage(owner_user_key=key, filter_params=filter_params)
 
         # Try cache first
         cached_item = await self._pop_random_cached_item(key, cache_key, filter_params)
