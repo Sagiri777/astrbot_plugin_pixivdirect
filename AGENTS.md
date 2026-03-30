@@ -478,6 +478,8 @@ grep -E "\[pixivdirect\]" {astrbot_data_path}/logs/astrbot.log
 - `refactor: improve ...`
 - `docs: update README`
 
+每次完成代码、文档或配置修改后，必须整理本次改动并写好一次对应的 Git commit；不要只停留在工作区未提交状态。
+
 ---
 
 ## 版本号管理
