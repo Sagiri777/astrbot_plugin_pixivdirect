@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.9.1] - 2026-03-30
+
+### Fixed
+- 调整 `/pixiv id i` 的发送链路，作品详情图片不再受群聊 R-18 显示、自动打码、R-18 标签隐藏和群屏蔽标签限制影响
+- 缓存命中的作品详情图片同样改为原样发送，避免 `id` 查询与实时拉取行为不一致
+
 ## [1.9.0] - 2026-03-30
 
 ### Added

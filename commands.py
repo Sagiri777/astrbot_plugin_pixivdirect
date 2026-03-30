@@ -365,12 +365,14 @@ class CommandHandler:
         primary_path: str,
         extra_paths: list[str],
         item: dict[str, Any],
+        apply_event_restrictions: bool = True,
     ):
         for result_item in await self._build_text_image_results(
             event,
             caption,
             primary_path,
             item,
+            apply_event_restrictions=apply_event_restrictions,
         ):
             yield result_item
 
@@ -379,6 +381,7 @@ class CommandHandler:
                 event,
                 extra_path,
                 item,
+                apply_event_restrictions=apply_event_restrictions,
             ):
                 yield result_item
 
@@ -509,8 +512,14 @@ class CommandHandler:
         event: AstrMessageEvent,
         text: str,
         item: dict[str, Any] | None = None,
+        *,
+        apply_event_restrictions: bool = True,
     ) -> str:
-        if not text or not self._should_hide_r18_tags(event, item):
+        if (
+            not apply_event_restrictions
+            or not text
+            or not self._should_hide_r18_tags(event, item)
+        ):
             return text
         return "\n".join(
             line for line in text.splitlines() if not line.startswith("🏷️ ")
@@ -521,8 +530,10 @@ class CommandHandler:
         event: AstrMessageEvent,
         image_path: str | None,
         item: dict[str, Any] | None = None,
+        *,
+        apply_event_restrictions: bool = True,
     ) -> str | None:
-        if not image_path or not item:
+        if not apply_event_restrictions or not image_path or not item:
             return image_path
 
         group_id = event.get_group_id()
@@ -595,12 +606,20 @@ class CommandHandler:
         text: str,
         image_path: str | None,
         item: dict[str, Any] | None = None,
+        *,
+        apply_event_restrictions: bool = True,
     ) -> list:
-        formatted_text = self._format_caption_for_event(event, text, item)
+        formatted_text = self._format_caption_for_event(
+            event,
+            text,
+            item,
+            apply_event_restrictions=apply_event_restrictions,
+        )
         prepared_path = await self._prepare_image_path_for_event(
             event,
             image_path,
             item,
+            apply_event_restrictions=apply_event_restrictions,
         )
         if not prepared_path:
             return [event.plain_result(formatted_text)]
@@ -618,11 +637,14 @@ class CommandHandler:
         event: AstrMessageEvent,
         image_path: str,
         item: dict[str, Any] | None = None,
+        *,
+        apply_event_restrictions: bool = True,
     ) -> list:
         prepared_path = await self._prepare_image_path_for_event(
             event,
             image_path,
             item,
+            apply_event_restrictions=apply_event_restrictions,
         )
         if not prepared_path:
             return []
@@ -773,22 +795,17 @@ class CommandHandler:
                 await self._emoji.add_emoji_reaction(event, "query_illust")
                 caption = cached_item.get("caption") or "Pixiv 作品详情（缓存）"
                 path = cached_item.get("path")
-                if path and self.should_send_image(event, cached_item):
+                if path:
                     for result in await self._build_text_image_results(
                         event,
                         f"{caption}\n- 来源: 缓存",
                         path,
                         cached_item,
+                        apply_event_restrictions=False,
                     ):
                         yield result
                 else:
-                    yield event.plain_result(
-                        self._format_caption_for_event(
-                            event,
-                            f"{caption}\n- 来源: 缓存\n⚠️ R-18 内容在群聊中仅显示信息",
-                            cached_item,
-                        )
-                    )
+                    yield event.plain_result(f"{caption}\n- 来源: 缓存")
                 return
 
             await self._emoji.add_emoji_reaction(event, "query_illust")
@@ -890,6 +907,7 @@ class CommandHandler:
                         caption,
                         str(gif_path),
                         illust,
+                        apply_event_restrictions=False,
                     ):
                         yield result
 
@@ -954,6 +972,7 @@ class CommandHandler:
                                 primary_path=downloaded_paths[0],
                                 extra_paths=downloaded_paths[1:],
                                 item=illust,
+                                apply_event_restrictions=False,
                             ):
                                 yield result_item
                             await self._cache_illust_result(
@@ -1003,6 +1022,7 @@ class CommandHandler:
                                 caption,
                                 local_paths[0],
                                 illust,
+                                apply_event_restrictions=False,
                             ):
                                 yield result_item
 
@@ -1015,6 +1035,7 @@ class CommandHandler:
                                             event,
                                             path,
                                             illust,
+                                            apply_event_restrictions=False,
                                         )
                                     )
                                     if not prepared_path:
