@@ -4,7 +4,7 @@
 
 **PixivDirect** 是一个 AstrBot 插件，用于直连访问 Pixiv，支持查询作品详情、作者信息和随机获取收藏图片。
 
-- **版本**: v1.6.0
+- **版本**: v1.9.0
 - **作者**: Sagiri777
 - **AstrBot 要求**: >= v4.5.0
 - **仓库**: https://github.com/Sagiri777/astrbot_plugin_pixivdirect
@@ -482,11 +482,17 @@ grep -E "\[pixivdirect\]" {astrbot_data_path}/logs/astrbot.log
 
 ## 版本号管理
 
+### README 更新日志维护规则
+
+- `README.md` 中的版本摘要**仅保留最近 5 条**。
+- 新增版本摘要时，若超过 5 条，必须删除最旧的多余记录。
+- 完整历史统一维护在 `CHANGELOG.md`。
+
 ### 版本号格式
 
 采用 **语义化版本** (Semantic Versioning)：`MAJOR.MINOR.PATCH`
 
-当前版本：`v1.6.0`
+当前版本：`v1.9.0`
 
 ### 更新规则
 
@@ -498,6 +504,8 @@ grep -E "\[pixivdirect\]" {astrbot_data_path}/logs/astrbot.log
 | 新增配置项 | MINOR | `1.6.0` -> `1.7.0` |
 | 重大重构 | MAJOR | `1.6.0` -> `2.0.0` |
 | 不兼容的 API 修改 | MAJOR | `1.6.0` -> `2.0.0` |
+
+> 例外：若仅进行文档/注释等非功能性改动（不影响插件行为），可不修改版本号。
 
 ### 具体场景判断
 
