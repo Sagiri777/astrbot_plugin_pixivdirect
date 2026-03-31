@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import math
 import re
 import shutil
 import subprocess
@@ -13,13 +14,20 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from PIL import Image, ImageFilter, ImageSequence
+from PIL import Image, ImageFilter, ImageOps, ImageSequence
 
 from astrbot.api import logger
 
 
 class ImageHandler:
     """Handles image downloading and processing for the Pixiv plugin."""
+
+    _AIOCQHTTP_SEND_MAX_BYTES = 3 * 1024 * 1024
+    _AIOCQHTTP_SEND_MAX_EDGE = 2560
+    _AIOCQHTTP_SEND_MAX_PIXELS = 6_000_000
+    _AIOCQHTTP_SEND_QUALITIES = (90, 84, 78, 72, 66, 60, 54)
+    _AIOCQHTTP_SEND_RESIZE_FACTORS = (1.0, 0.9, 0.8, 0.7, 0.6)
+    _RESAMPLE_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
 
     def __init__(
         self,
@@ -335,6 +343,29 @@ class ImageHandler:
             mode="hajimi",
         )
 
+    async def prepare_image_for_send(
+        self,
+        image_path: str | None,
+        *,
+        platform_name: str,
+    ) -> str | None:
+        """Prepare a local image for safer platform delivery."""
+        if not image_path or platform_name != "aiocqhttp":
+            return image_path
+
+        try:
+            return await asyncio.to_thread(
+                self._prepare_aiocqhttp_image_for_send_sync,
+                image_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[pixivdirect] Failed to optimize image for aiocqhttp send %s: %s",
+                image_path,
+                exc,
+            )
+            return image_path
+
     def _create_censored_image_sync(
         self,
         image_path: str,
@@ -391,6 +422,147 @@ class ImageHandler:
                 self._save_single_frame(censored, target, target_suffix)
 
         logger.info("[pixivdirect] Censored image saved to %s", target)
+        return str(target)
+
+    @staticmethod
+    def _flatten_to_rgb(image: Image.Image) -> Image.Image:
+        normalized = ImageOps.exif_transpose(image)
+        if normalized.mode in {"RGBA", "LA"}:
+            background = Image.new("RGB", normalized.size, (255, 255, 255))
+            alpha = normalized.getchannel("A")
+            background.paste(normalized.convert("RGBA"), mask=alpha)
+            return background
+        if normalized.mode == "P" and "transparency" in normalized.info:
+            rgba = normalized.convert("RGBA")
+            background = Image.new("RGB", rgba.size, (255, 255, 255))
+            background.paste(rgba, mask=rgba.getchannel("A"))
+            return background
+        return normalized.convert("RGB")
+
+    @classmethod
+    def _delivery_resize_ratio(cls, width: int, height: int) -> float:
+        if width <= 0 or height <= 0:
+            return 1.0
+
+        ratio = 1.0
+        max_edge = max(width, height)
+        if max_edge > cls._AIOCQHTTP_SEND_MAX_EDGE:
+            ratio = min(ratio, cls._AIOCQHTTP_SEND_MAX_EDGE / max_edge)
+
+        pixels = width * height
+        if pixels > cls._AIOCQHTTP_SEND_MAX_PIXELS:
+            ratio = min(
+                ratio,
+                math.sqrt(cls._AIOCQHTTP_SEND_MAX_PIXELS / pixels),
+            )
+
+        return min(1.0, ratio)
+
+    @classmethod
+    def _resize_for_delivery(cls, image: Image.Image) -> Image.Image:
+        width, height = image.size
+        ratio = cls._delivery_resize_ratio(width, height)
+        if ratio >= 0.999:
+            return image
+
+        resized = image.resize(
+            (
+                max(1, int(width * ratio)),
+                max(1, int(height * ratio)),
+            ),
+            cls._RESAMPLE_LANCZOS,
+        )
+        logger.info(
+            "[pixivdirect] Resized aiocqhttp send image from %sx%s to %sx%s",
+            width,
+            height,
+            resized.width,
+            resized.height,
+        )
+        return resized
+
+    @classmethod
+    def _encode_delivery_jpeg(
+        cls,
+        image: Image.Image,
+    ) -> tuple[bytes, int]:
+        best_bytes = b""
+        best_quality = cls._AIOCQHTTP_SEND_QUALITIES[-1]
+        best_size = 0
+
+        for resize_factor in cls._AIOCQHTTP_SEND_RESIZE_FACTORS:
+            working = image
+            if resize_factor < 0.999:
+                working = image.resize(
+                    (
+                        max(1, int(image.width * resize_factor)),
+                        max(1, int(image.height * resize_factor)),
+                    ),
+                    cls._RESAMPLE_LANCZOS,
+                )
+
+            for quality in cls._AIOCQHTTP_SEND_QUALITIES:
+                buffer = io.BytesIO()
+                working.save(
+                    buffer,
+                    format="JPEG",
+                    quality=quality,
+                    optimize=True,
+                    progressive=True,
+                )
+                payload = buffer.getvalue()
+                payload_size = len(payload)
+                if not best_bytes or payload_size < best_size:
+                    best_bytes = payload
+                    best_quality = quality
+                    best_size = payload_size
+                if payload_size <= cls._AIOCQHTTP_SEND_MAX_BYTES:
+                    return payload, quality
+
+        return best_bytes, best_quality
+
+    def _prepare_aiocqhttp_image_for_send_sync(self, image_path: str) -> str:
+        source = Path(image_path)
+        if not source.exists():
+            raise FileNotFoundError(f"Image not found: {image_path}")
+
+        stat = source.stat()
+        digest = hashlib.md5(
+            f"{source.resolve()}:{stat.st_mtime_ns}:{stat.st_size}".encode()
+        ).hexdigest()[:12]
+        target = self._cache_dir / f"sendsafe_{source.stem}_{digest}.jpg"
+        if target.exists():
+            return str(target)
+
+        with Image.open(source) as image:
+            if bool(getattr(image, "is_animated", False)):
+                logger.info(
+                    "[pixivdirect] Skipping aiocqhttp delivery optimization for animated image %s",
+                    source,
+                )
+                return str(source)
+
+            if (
+                stat.st_size <= self._AIOCQHTTP_SEND_MAX_BYTES
+                and self._delivery_resize_ratio(*image.size) >= 0.999
+            ):
+                return str(source)
+
+            flattened = self._flatten_to_rgb(image)
+            resized = self._resize_for_delivery(flattened)
+            payload, quality = self._encode_delivery_jpeg(resized)
+            if not payload:
+                return str(source)
+
+        target.write_bytes(payload)
+        logger.info(
+            "[pixivdirect] Prepared aiocqhttp send cache %s from %s (%d -> %d bytes, quality=%s)",
+            target,
+            source,
+            stat.st_size,
+            len(payload),
+            quality,
+        )
         return str(target)
 
     def _save_animated_censor(

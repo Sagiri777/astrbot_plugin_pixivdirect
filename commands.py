@@ -644,21 +644,32 @@ class CommandHandler:
         *,
         apply_event_restrictions: bool = True,
     ) -> str | None:
-        if not apply_event_restrictions or not image_path or not item:
-            return image_path
+        if not image_path:
+            return None
+
+        prepared_path = image_path
+        if (
+            not apply_event_restrictions
+            or not item
+            or not self._cache.is_r18_item(item)
+        ):
+            return await self._image.prepare_image_for_send(
+                prepared_path,
+                platform_name=event.get_platform_name(),
+            )
 
         group_id = event.get_group_id()
-        if not self._cache.is_r18_item(item):
-            return image_path
-
         mode = self._get_effective_r18_mosaic_mode(event)
         if mode == "off":
             logger.info(
                 "[pixivdirect] R-18 image %s in context %s will be sent without censor",
-                image_path,
+                prepared_path,
                 group_id if group_id else user_key(event),
             )
-            return image_path
+            return await self._image.prepare_image_for_send(
+                prepared_path,
+                platform_name=event.get_platform_name(),
+            )
 
         illust_id = item.get("illust_id")
         entity_key = self._r18_mosaic_entity_key(event)
@@ -676,10 +687,10 @@ class CommandHandler:
                 mode,
                 blur_strength,
                 group_id if group_id else user_key(event),
-                image_path,
+                prepared_path,
             )
-            return await self._image.create_censored_image(
-                image_path,
+            prepared_path = await self._image.create_censored_image(
+                prepared_path,
                 name_prefix=name_prefix,
                 mode=mode,
                 blur_strength=blur_strength,
@@ -688,17 +699,17 @@ class CommandHandler:
             logger.warning(
                 "[pixivdirect] Failed to apply %s censor to image %s: %s",
                 mode,
-                image_path,
+                prepared_path,
                 exc,
             )
             if mode == "hajimi":
                 try:
                     logger.warning(
                         "[pixivdirect] Falling back to blur censor for image %s",
-                        image_path,
+                        prepared_path,
                     )
-                    return await self._image.create_censored_image(
-                        image_path,
+                    prepared_path = await self._image.create_censored_image(
+                        prepared_path,
                         name_prefix=f"{name_prefix}_fallback",
                         mode="blur",
                         blur_strength=self._config.get_r18_mosaic_strength(entity_key),
@@ -706,10 +717,13 @@ class CommandHandler:
                 except Exception as fallback_exc:
                     logger.warning(
                         "[pixivdirect] Blur fallback also failed for image %s: %s",
-                        image_path,
+                        prepared_path,
                         fallback_exc,
                     )
-            return image_path
+        return await self._image.prepare_image_for_send(
+            prepared_path,
+            platform_name=event.get_platform_name(),
+        )
 
     async def _build_text_image_results(
         self,

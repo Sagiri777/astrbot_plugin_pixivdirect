@@ -14,12 +14,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 -
 
 ### Fixed
-- 修复启动阶段刷新 PixEz host map 时只依赖 DoH 的问题；当 `cloudflare-dns.com` 等 DoH 服务不可达时，现在会继续尝试 `223.5.5.5`、`223.6.6.6`、`8.8.8.8`、`1.1.1.1` 等传统 DNS 解析，并最终回退系统 DNS
+- 
 
 ## [1.10.11] - 2026-03-31
 
 ### Fixed
-- 修复启动阶段刷新 PixEz host map 时只依赖 DoH 的问题；当 `cloudflare-dns.com` 等 DoH 服务不可达时，现在会继续尝试 `223.5.5.5`、`223.6.6.6`、`8.8.8.8`、`1.1.1.1` 等传统 DNS 解析，并最终回退系统 DNS
+- 修复 `aiocqhttp` 发送随机收藏等本地缓存静态图时，遇到超大 PNG/JPEG 容易在 QQ 侧上传超时的问题
+- 发送前现在会自动为超出安全阈值的静态图生成并复用压缩发送缓存，统一限制尺寸与体积，避免同类大图再次直接进入发送链路
 
 ## [1.10.10] - 2026-03-31
 
