@@ -29,6 +29,7 @@ astrbot_plugin_pixivdirect/
 ├── constants.py             # 常量与配置项
 ├── metadata.yaml            # 插件元数据
 ├── README.md                # 用户文档
+├── scripts/                 # 本地调试与辅助脚本
 └── AGENTS.md                # 本文件
 ```
 
@@ -433,6 +434,38 @@ tail -f {astrbot_data_path}/logs/astrbot.log | grep pixivdirect
 # 实时调试级别日志
 grep -E "\[pixivdirect\]" {astrbot_data_path}/logs/astrbot.log
 ```
+
+### 本地脚本调试
+
+当 AI 需要在本地复现 `/pixiv search ...`、`/pixiv searchuser ...` 等网络问题时，优先使用“模拟插件命令流，但不模拟文件读取”的方式：
+
+1. 使用脚本模拟 `main.py -> CommandHandler -> _pixiv_call -> pixivSDK.py` 的命令解析、参数构造、DNS 重试和搜索兜底逻辑。
+2. 不要为了这类网络调试去构造完整的 `ConfigManager` 持久化数据、插件数据目录或 `user_refresh_tokens.json` 读取流程。
+3. Token、关键词、页码等调试输入应通过命令行参数、环境变量，或脚本内显式传参提供，而不是依赖插件运行时文件读取。
+4. 若沙箱阻止外网请求，应重新以提权方式执行同一条测试命令，不要把沙箱报错误判为 Pixiv 接口本身错误。
+5. 调试目标是确认“插件命令行为”是否正确，例如：
+   - `/pixiv search keyword` 是否先走 `search_illust`
+   - 当作品搜索为空时，是否按插件当前逻辑回退到 `search_user`
+   - 搜索参数是否和插件真实发送的一致
+   - DNS 重试和运行时解析是否生效
+
+推荐使用仓库内的 `scripts/manual_search_test.py` 作为这类本地调试的入口，但重点是“模拟插件搜索链路”，而不是依赖真实插件配置文件。
+
+### Token 调试输入
+
+- 若仓库内已有可复用的脚本或方法用于提供测试 Token，可以将其作为脚本输入来源。
+- 但在文档、脚本和调试说明中，应强调 Token 只是调试输入，不属于插件文件读取流程的一部分。
+- **绝不**在日志、提交信息或文档示例中直接明文写出真实 Token。
+
+### README 版本摘要数量检查
+
+更新 `README.md` 的版本摘要前后，AI 应优先使用 `scripts/getReadmeVersionCount.py` 检查摘要数量，确保 README 中仅保留最近 5 条版本摘要：
+
+```bash
+python3 scripts/getReadmeVersionCount.py
+```
+
+若输出大于 `5`，必须删除最旧的多余版本摘要，再提交改动。
 
 ### 热重载
 
