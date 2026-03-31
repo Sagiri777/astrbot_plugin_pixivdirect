@@ -25,11 +25,11 @@ from .constants import (
 )
 from .emoji_reaction import EmojiReactionHandler
 from .image_handler import ImageHandler
-from .pixivSDK import pixiv
+from .pixivSDK import pixiv, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.9")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.10")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -45,6 +45,7 @@ class PixivDirectPlugin(Star):
         self._dns_refresh_lock = asyncio.Lock()
         self._dns_next_refresh_at: float = 0.0
         self._dns_force_refresh: bool = False
+        self._dns_refresh_task: asyncio.Task | None = None
 
         # Idle cache state
         self._idle_cache_task: asyncio.Task | None = None
@@ -76,6 +77,8 @@ class PixivDirectPlugin(Star):
     async def initialize(self):
         self._config_manager.ensure_directories()
         self._config_manager.load_all()
+        await self._refresh_dns_cache(reason="startup")
+        self._dns_refresh_task = asyncio.create_task(self._dns_refresh_loop())
         # Start idle cache task
         self._idle_cache_task = asyncio.create_task(self._idle_cache_loop())
 
@@ -96,47 +99,9 @@ class PixivDirectPlugin(Star):
 
         return next_refresh.timestamp()
 
-    async def _consume_dns_refresh_flag(self) -> bool:
-        now = time.time()
-        if now < self._dns_next_refresh_at:
-            return False
-
-        async with self._dns_refresh_lock:
-            now = time.time()
-            if now < self._dns_next_refresh_at:
-                return False
-
-            if self._dns_force_refresh:
-                self._dns_force_refresh = False
-                self._dns_next_refresh_at = self._next_dns_refresh_time()
-                return True
-
-            if not self._config_manager.host_map_file.exists():
-                self._dns_next_refresh_at = self._next_dns_refresh_time()
-                return True
-
-            try:
-                file_mtime = self._config_manager.host_map_file.stat().st_mtime
-            except OSError:
-                self._dns_next_refresh_at = self._next_dns_refresh_time()
-                return True
-
-            from datetime import datetime
-
-            today_4am = (
-                datetime.now()
-                .replace(hour=4, minute=0, second=0, microsecond=0)
-                .timestamp()
-            )
-            if now >= today_4am and file_mtime < today_4am:
-                self._dns_next_refresh_at = self._next_dns_refresh_time()
-                return True
-
-            self._dns_next_refresh_at = self._next_dns_refresh_time()
-            return False
-
     async def _mark_dns_refreshed(self) -> None:
         async with self._dns_refresh_lock:
+            self._dns_force_refresh = False
             self._dns_next_refresh_at = self._next_dns_refresh_time()
 
     def get_next_dns_refresh_time(self) -> str:
@@ -177,6 +142,57 @@ class PixivDirectPlugin(Star):
         async with self._dns_refresh_lock:
             self._dns_force_refresh = True
             self._dns_next_refresh_at = 0.0
+        await self._refresh_dns_cache(reason="manual")
+
+    async def _refresh_dns_cache(self, *, reason: str) -> bool:
+        disable_bypass_sni = bool(
+            self._config_manager.get_constant("disable_bypass_sni", DISABLE_BYPASS_SNI)
+        )
+        if disable_bypass_sni:
+            await self._mark_dns_refreshed()
+            logger.info(
+                "[pixivdirect] Skip DNS refresh on %s because disable_bypass_sni=true",
+                reason,
+            )
+            return False
+
+        try:
+            await asyncio.to_thread(
+                refresh_pixiv_host_map,
+                dns_cache_file=str(self._config_manager.host_map_file),
+            )
+            await self._mark_dns_refreshed()
+            logger.info("[pixivdirect] Refreshed PixEz host map on %s", reason)
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[pixivdirect] Failed to refresh PixEz host map on %s: %s",
+                reason,
+                exc,
+            )
+            async with self._dns_refresh_lock:
+                self._dns_next_refresh_at = time.time() + 300
+            return False
+
+    async def _dns_refresh_loop(self) -> None:
+        while True:
+            try:
+                async with self._dns_refresh_lock:
+                    force_refresh = self._dns_force_refresh
+                    next_refresh_at = self._dns_next_refresh_at or self._next_dns_refresh_time()
+                    self._dns_next_refresh_at = next_refresh_at
+
+                now = time.time()
+                if force_refresh or now >= next_refresh_at:
+                    await self._refresh_dns_cache(reason="scheduled")
+                    continue
+
+                await asyncio.sleep(min(60.0, max(1.0, next_refresh_at - now)))
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("[pixivdirect] DNS refresh loop error: %s", exc)
+                await asyncio.sleep(60)
 
     async def _pixiv_call(
         self, action: str, params: dict[str, Any], **kwargs: Any
@@ -184,13 +200,10 @@ class PixivDirectPlugin(Star):
         disable_bypass_sni = bool(
             self._config_manager.get_constant("disable_bypass_sni", DISABLE_BYPASS_SNI)
         )
-        dns_update_hosts = (
-            await self._consume_dns_refresh_flag() if not disable_bypass_sni else False
-        )
         call_kwargs = {
             "bypass_sni": not disable_bypass_sni,
             "dns_cache_file": str(self._config_manager.host_map_file),
-            "dns_update_hosts": dns_update_hosts,
+            "dns_update_hosts": False,
             "runtime_dns_resolve": False,
             "max_retries": 2,
             **kwargs,
@@ -201,8 +214,6 @@ class PixivDirectPlugin(Star):
             params,
             **call_kwargs,
         )
-        if dns_update_hosts:
-            await self._mark_dns_refreshed()
 
         transient_statuses = {403, 429, 440, 500, 502, 503, 504}
         if (
@@ -216,10 +227,9 @@ class PixivDirectPlugin(Star):
                 action,
                 result.get("status"),
             )
-            await self.trigger_dns_refresh()
+            await self._refresh_dns_cache(reason=f"retry:{action}")
             retry_kwargs = {
                 **call_kwargs,
-                "dns_update_hosts": True,
                 "runtime_dns_resolve": True,
             }
             result = await asyncio.to_thread(
@@ -472,6 +482,12 @@ class PixivDirectPlugin(Star):
             )
 
     async def terminate(self):
+        if self._dns_refresh_task and not self._dns_refresh_task.done():
+            self._dns_refresh_task.cancel()
+            try:
+                await self._dns_refresh_task
+            except asyncio.CancelledError:
+                pass
         if self._idle_cache_task and not self._idle_cache_task.done():
             self._idle_cache_task.cancel()
             try:

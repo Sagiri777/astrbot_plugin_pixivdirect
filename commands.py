@@ -1333,7 +1333,7 @@ class CommandHandler:
                     except Exception:
                         pass
                 network_mode = (
-                    "混合绕过模式（Accesser Host/DNS 覆盖 + PixEz 禁用 SNI 回退）"
+                    "PixEz 优先模式（启动/凌晨4点 DoH 刷新 + 缓存 IP + 禁用 SNI）"
                     if bypass_enabled
                     else "普通域名模式（已禁用 SNI 绕过）"
                 )

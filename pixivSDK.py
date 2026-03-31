@@ -385,6 +385,33 @@ def _save_host_map_file(path: str, host_map: dict[str, str]) -> None:
         f.write("\n")
 
 
+def refresh_pixiv_host_map(
+    *,
+    dns_server: str = "doh.dns.sb",
+    dns_cache_file: str = ".pixiv_host_map.json",
+    dns_timeout: int = 3,
+    proxy: str | None = None,
+) -> dict[str, str]:
+    """Refresh PixEz-style host cache via DoH without requiring Pixiv auth."""
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    session = _get_session()
+    host_map = _refresh_pixez_hosts_via_dns(
+        base_map=dict(PIXEZ_HOST_MAP),
+        doh_server=dns_server,
+        timeout=dns_timeout,
+        session=session,
+        proxies=proxies,
+    )
+    _save_host_map_file(dns_cache_file, host_map)
+    _drop_runtime_dns_cache_for_hosts(
+        list(host_map.keys()),
+        doh_server=dns_server,
+        dns_timeout=dns_timeout,
+        proxy=proxy,
+    )
+    return host_map
+
+
 def _read_refresh_token_file(path: str = ".pixiv_refresh_token") -> str | None:
     try:
         with open(path, encoding="utf-8") as f:
@@ -775,18 +802,18 @@ def pixiv(
         if has_proxy:
             return _do_request()
 
-        # 混合 Accesser + PixEz：
-        # 1. 先走 Accesser 式“保留域名 URL + 指定候选 IP 解析”
-        # 2. 同一候选失败后再走 PixEz 式“IP 直连 + Host + 禁用 SNI/证书校验”
-        # 3. 候选依次来自：内置 IP -> 缓存 IP -> 目标域名 DoH IP -> 别名域名 DoH IP
+        # PixEz-first:
+        # 1. 默认优先使用缓存 IP 直连
+        # 2. 直连时禁用 TLS SNI，并跳过证书校验
+        # 3. 同一候选失败后，再回退到 Accesser 风格的域名请求 + DNS 覆盖
+        # 4. 候选依次来自：缓存 IP -> 内置 IP -> 目标域名 DoH IP -> 别名域名 DoH IP
         ip_candidates: list[str] = []
-        builtin_ip = PIXEZ_HOST_MAP.get(req_host)
-        if builtin_ip:
-            ip_candidates.append(builtin_ip)
-
         cached_ip = host_map.get(req_host)
         if cached_ip and cached_ip not in ip_candidates:
             ip_candidates.append(cached_ip)
+        builtin_ip = PIXEZ_HOST_MAP.get(req_host)
+        if builtin_ip and builtin_ip not in ip_candidates:
+            ip_candidates.append(builtin_ip)
 
         if runtime_dns_resolve:
             live_cache_key = f"{req_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
@@ -812,7 +839,24 @@ def pixiv(
         last_res: requests.Response | None = None
         attempted = False
         for ip in ip_candidates:
-            accesser_exc: Exception | None = None
+            try:
+                attempted = True
+                res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
+                last_res = res
+                if res.ok:
+                    return res
+                if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
+                    logger.warning(
+                        "[pixivdirect] %s returned status %s via PixEz-style candidate %s, trying Accesser-style fallback",
+                        action,
+                        res.status_code,
+                        ip,
+                    )
+                else:
+                    return res
+            except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
+                last_exc = exc
+
             try:
                 attempted = True
                 res = _do_request(
@@ -825,26 +869,7 @@ def pixiv(
                     return res
                 if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
                     logger.warning(
-                        "[pixivdirect] %s returned status %s via Accesser-style candidate %s, trying PixEz-style fallback",
-                        action,
-                        res.status_code,
-                        ip,
-                    )
-                else:
-                    return res
-            except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
-                accesser_exc = exc
-                last_exc = exc
-
-            try:
-                attempted = True
-                res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
-                last_res = res
-                if res.ok:
-                    return res
-                if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
-                    logger.warning(
-                        "[pixivdirect] %s returned status %s via PixEz-style candidate %s, trying next candidate",
+                        "[pixivdirect] %s returned status %s via Accesser-style candidate %s, trying next candidate",
                         action,
                         res.status_code,
                         ip,
@@ -853,14 +878,12 @@ def pixiv(
                 return res
             except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
                 last_exc = exc
-                if accesser_exc is not None:
-                    logger.warning(
-                        "[pixivdirect] %s failed on candidate %s with Accesser-style error=%s and PixEz-style error=%s",
-                        action,
-                        ip,
-                        accesser_exc,
-                        exc,
-                    )
+                logger.warning(
+                    "[pixivdirect] %s failed on candidate %s with PixEz-style first pass and Accesser-style fallback error=%s",
+                    action,
+                    ip,
+                    exc,
+                )
                 continue
 
         # 仅在主域名候选全部失败后，再尝试 Accesser 风格的别名域名解析。
@@ -884,7 +907,31 @@ def pixiv(
             for ip in ranked_alias_ips:
                 if ip in ip_candidates:
                     continue
-                accesser_exc = None
+                try:
+                    attempted = True
+                    res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
+                    last_res = res
+                    if res.ok:
+                        return res
+                    if (
+                        runtime_dns_resolve
+                        and res.status_code in retryable_bypass_statuses
+                    ):
+                        logger.warning(
+                            "[pixivdirect] %s returned status %s via PixEz-style alias candidate %s, trying Accesser-style fallback",
+                            action,
+                            res.status_code,
+                            ip,
+                        )
+                    else:
+                        return res
+                except (
+                    RequestsConnectionError,
+                    RequestsTimeout,
+                    RequestsSSLError,
+                ) as exc:
+                    last_exc = exc
+
                 try:
                     attempted = True
                     res = _do_request(
@@ -900,33 +947,7 @@ def pixiv(
                         and res.status_code in retryable_bypass_statuses
                     ):
                         logger.warning(
-                            "[pixivdirect] %s returned status %s via Accesser-style alias candidate %s, trying PixEz-style fallback",
-                            action,
-                            res.status_code,
-                            ip,
-                        )
-                    else:
-                        return res
-                except (
-                    RequestsConnectionError,
-                    RequestsTimeout,
-                    RequestsSSLError,
-                ) as exc:
-                    accesser_exc = exc
-                    last_exc = exc
-
-                try:
-                    attempted = True
-                    res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
-                    last_res = res
-                    if res.ok:
-                        return res
-                    if (
-                        runtime_dns_resolve
-                        and res.status_code in retryable_bypass_statuses
-                    ):
-                        logger.warning(
-                            "[pixivdirect] %s returned status %s via PixEz-style alias candidate %s, trying next candidate",
+                            "[pixivdirect] %s returned status %s via Accesser-style alias candidate %s, trying next candidate",
                             action,
                             res.status_code,
                             ip,
@@ -939,14 +960,12 @@ def pixiv(
                     RequestsSSLError,
                 ) as exc:
                     last_exc = exc
-                    if accesser_exc is not None:
-                        logger.warning(
-                            "[pixivdirect] %s failed on alias candidate %s with Accesser-style error=%s and PixEz-style error=%s",
-                            action,
-                            ip,
-                            accesser_exc,
-                            exc,
-                        )
+                    logger.warning(
+                        "[pixivdirect] %s failed on alias candidate %s with PixEz-style first pass and Accesser-style fallback error=%s",
+                        action,
+                        ip,
+                        exc,
+                    )
                     continue
 
         # 搜索接口在所有 IP 候选都返回 403 时，再补一次原域名直连，
