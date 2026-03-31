@@ -8,14 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- 
+-
 
 ### Changed
-- Pixiv 直连链路调整为 PixEz 优先模式：插件启动时立即执行 DoH 解析，并在每天凌晨 4 点后台重跑一次
-- 请求阶段默认优先使用缓存 IP + 禁用 TLS SNI，只有当前候选失败后才回退到 Accesser 风格的域名解析覆盖
+-
 
 ### Fixed
-- 
+- 修复启动阶段刷新 PixEz host map 时只依赖 DoH 的问题；当 `cloudflare-dns.com` 等 DoH 服务不可达时，现在会继续尝试 `223.5.5.5`、`223.6.6.6`、`8.8.8.8`、`1.1.1.1` 等传统 DNS 解析，并最终回退系统 DNS
+
+## [1.10.11] - 2026-03-31
+
+### Fixed
+- 修复启动阶段刷新 PixEz host map 时只依赖 DoH 的问题；当 `cloudflare-dns.com` 等 DoH 服务不可达时，现在会继续尝试 `223.5.5.5`、`223.6.6.6`、`8.8.8.8`、`1.1.1.1` 等传统 DNS 解析，并最终回退系统 DNS
 
 ## [1.10.10] - 2026-03-31
 

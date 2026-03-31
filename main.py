@@ -29,7 +29,7 @@ from .pixivSDK import pixiv, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.10")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.11")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -179,7 +179,9 @@ class PixivDirectPlugin(Star):
             try:
                 async with self._dns_refresh_lock:
                     force_refresh = self._dns_force_refresh
-                    next_refresh_at = self._dns_next_refresh_at or self._next_dns_refresh_time()
+                    next_refresh_at = (
+                        self._dns_next_refresh_at or self._next_dns_refresh_time()
+                    )
                     self._dns_next_refresh_at = next_refresh_at
 
                 now = time.time()

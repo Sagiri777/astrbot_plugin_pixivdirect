@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import os
 import random
@@ -64,6 +65,7 @@ _thread_local = threading.local()
 # Global session pool for connection reuse
 _global_session: requests.Session | None = None
 _session_lock = threading.Lock()
+_DNS_REQUEST_COUNTER = itertools.count(random.randint(0, 65535))
 
 # 常用 action -> API path 映射。也支持直接传入 path（以 / 开头）。
 API_ACTIONS: dict[str, str] = {
@@ -107,6 +109,88 @@ def _is_ipv4(value: str) -> bool:
             value,
         )
     )
+
+
+def _build_dns_query(host: str, request_id: int) -> bytes:
+    labels = host.rstrip(".").split(".")
+    question = bytearray()
+    for label in labels:
+        encoded = label.encode("idna")
+        question.append(len(encoded))
+        question.extend(encoded)
+    question.append(0)
+    question.extend((0, 1, 0, 1))
+    header = request_id.to_bytes(2, "big") + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00"
+    return header + bytes(question)
+
+
+def _skip_dns_name(payload: bytes, offset: int) -> int:
+    while offset < len(payload):
+        length = payload[offset]
+        if length == 0:
+            return offset + 1
+        if length & 0xC0 == 0xC0:
+            return offset + 2
+        offset += 1 + length
+    return offset
+
+
+def _resolve_a_records_via_dns_server(
+    host: str,
+    *,
+    dns_server: str,
+    timeout: int,
+) -> list[str]:
+    request_id = next(_DNS_REQUEST_COUNTER) & 0xFFFF
+    query = _build_dns_query(host, request_id)
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.settimeout(float(timeout))
+    try:
+        sock.sendto(query, (dns_server, 53))
+        payload, _ = sock.recvfrom(2048)
+    except OSError:
+        return []
+    finally:
+        sock.close()
+
+    if len(payload) < 12 or int.from_bytes(payload[:2], "big") != request_id:
+        return []
+    flags = int.from_bytes(payload[2:4], "big")
+    if flags & 0x8000 == 0 or (flags & 0x000F) != 0:
+        return []
+
+    question_count = int.from_bytes(payload[4:6], "big")
+    answer_count = int.from_bytes(payload[6:8], "big")
+    offset = 12
+    for _ in range(question_count):
+        offset = _skip_dns_name(payload, offset)
+        offset += 4
+        if offset > len(payload):
+            return []
+
+    ips: list[str] = []
+    seen: set[str] = set()
+    for _ in range(answer_count):
+        offset = _skip_dns_name(payload, offset)
+        if offset + 10 > len(payload):
+            return ips
+        record_type = int.from_bytes(payload[offset : offset + 2], "big")
+        offset += 2
+        record_class = int.from_bytes(payload[offset : offset + 2], "big")
+        offset += 2
+        offset += 4
+        rdlength = int.from_bytes(payload[offset : offset + 2], "big")
+        offset += 2
+        if offset + rdlength > len(payload):
+            return ips
+        rdata = payload[offset : offset + rdlength]
+        offset += rdlength
+        if record_type == 1 and record_class == 1 and rdlength == 4:
+            ip = ".".join(str(part) for part in rdata)
+            if _is_ipv4(ip) and ip not in seen:
+                seen.add(ip)
+                ips.append(ip)
+    return ips
 
 
 def _resolve_a_record_via_doh(
@@ -197,6 +281,15 @@ def _doh_server_candidates(primary: str) -> list[str]:
         if server not in candidates:
             candidates.append(server)
     return candidates
+
+
+def _dns_server_candidates() -> list[str]:
+    return [
+        "223.5.5.5",
+        "223.6.6.6",
+        "8.8.8.8",
+        "1.1.1.1",
+    ]
 
 
 def _get_runtime_dns_cache(key: str) -> list[str] | None:
@@ -290,7 +383,7 @@ def _refresh_pixez_hosts_via_dns(
             timeout=timeout,
             session=session,
             proxies=proxies,
-            include_system_dns=False,
+            include_system_dns=True,
         )
         ranked, _ = _rank_ips_by_latency(
             all_ips, timeout=max(1.0, min(3.0, float(timeout)))
@@ -330,6 +423,17 @@ def _resolve_host_ips(
             timeout=timeout,
             session=session,
             proxies=proxies,
+        )
+        for ip in ips:
+            add_ip(ip)
+            if len(deduped) >= max_ips:
+                return deduped
+
+    for dns_server in _dns_server_candidates():
+        ips = _resolve_a_records_via_dns_server(
+            host,
+            dns_server=dns_server,
+            timeout=timeout,
         )
         for ip in ips:
             add_ip(ip)
