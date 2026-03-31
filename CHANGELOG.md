@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.11.1] - 2026-03-31
+
+### Fixed
+- 修复 `accesser` 模式对普通 Pixiv 请求未启用实时 DNS 解析，导致 `/pixiv id`、图片下载和鉴权等请求无法稳定走 Accesser 风格域名覆盖的问题
+- 修复 `/pixiv proxy clear` 未清空当日代理救援计数，重新配置代理后可能过早进入粘滞代理窗口的问题
+
 ## [1.11.0] - 2026-03-31
 
 ### Added

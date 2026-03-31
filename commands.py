@@ -2451,6 +2451,7 @@ class CommandHandler:
 
         if subcommand == "clear":
             config["proxy_url"] = ""
+            state["daily_rescue_counts"] = {}
             state["proxy_until"] = None
             state["last_reason"] = ""
             await self._config.save_search_proxy_config()

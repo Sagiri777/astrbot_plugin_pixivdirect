@@ -28,7 +28,7 @@ from .pixivSDK import pixiv, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.11.0")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.11.1")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -155,13 +155,17 @@ class PixivDirectPlugin(Star):
         **kwargs: Any,
     ) -> dict[str, Any]:
         bypass_mode = self._effective_bypass_mode()
+        enable_runtime_dns = runtime_dns_resolve and not proxy
+        if bypass_mode == "accesser" and not proxy:
+            # Accesser mode depends on live DNS candidates for domain override.
+            enable_runtime_dns = True
         return {
             "bypass_sni": bypass_mode != "disabled" and not proxy,
             "bypass_mode": bypass_mode if bypass_mode != "disabled" else "auto",
             "proxy": proxy,
             "dns_cache_file": str(self._config_manager.host_map_file),
             "dns_update_hosts": dns_update_hosts,
-            "runtime_dns_resolve": runtime_dns_resolve and not proxy,
+            "runtime_dns_resolve": enable_runtime_dns,
             "max_retries": 2,
             **kwargs,
         }
