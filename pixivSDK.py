@@ -871,6 +871,24 @@ def pixiv(
                     last_exc = exc
                     continue
 
+        # 搜索接口在所有 IP 候选都返回 403 时，再补一次原域名直连，
+        # 避免固定 IP/别名 IP 全部被风控但域名链路仍可用的情况。
+        if (
+            attempted
+            and runtime_dns_resolve
+            and last_res is not None
+            and last_res.status_code in retryable_bypass_statuses
+        ):
+            logger.warning(
+                "[pixivdirect] %s exhausted IP candidates with status %s, trying direct domain request",
+                action,
+                last_res.status_code,
+            )
+            try:
+                return _do_request()
+            except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
+                last_exc = exc
+
         # 只在没有任何可用 IP 候选时，才回退到原域名直连。
         if not attempted:
             try:

@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.8] - 2026-03-31
+
+### Fixed
+- 修复搜索接口在运行时 DNS 模式下遍历完所有 IP 候选仍返回 `403` 时，会直接把最后一个 `403` 返回给上层而不再尝试原域名直连的问题
+- 现在 `search_illust` 与 `search_user` 在 IP 候选全部被拒绝后，会额外补一次原域名请求，降低固定 IP 与别名 IP 全部被风控时的失败概率
+
 ## [1.10.7] - 2026-03-31
 
 ### Changed
