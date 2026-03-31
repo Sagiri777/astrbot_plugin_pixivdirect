@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.11.2] - 2026-03-31
+
+### Fixed
+- 修复 `aiocqhttp` 发送 `/pixiv id` 等命中的本地 PNG 缓存图时，仍可能直接沿用原始路径进入 QQ 发送链路并触发超时的问题
+- 发送前现在会统一为本地静态 PNG/WebP 等格式生成并复用 JPEG 发送缓存，不再只在超大图片时才做压缩处理
+
 ## [1.11.1] - 2026-03-31
 
 ### Fixed

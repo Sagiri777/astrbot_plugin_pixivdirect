@@ -25,6 +25,7 @@ class ImageHandler:
     _AIOCQHTTP_SEND_MAX_BYTES = 3 * 1024 * 1024
     _AIOCQHTTP_SEND_MAX_EDGE = 2560
     _AIOCQHTTP_SEND_MAX_PIXELS = 6_000_000
+    _AIOCQHTTP_SEND_DIRECT_FORMATS = {".jpg", ".jpeg"}
     _AIOCQHTTP_SEND_QUALITIES = (90, 84, 78, 72, 66, 60, 54)
     _AIOCQHTTP_SEND_RESIZE_FACTORS = (1.0, 0.9, 0.8, 0.7, 0.6)
     _RESAMPLE_LANCZOS = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
@@ -542,8 +543,14 @@ class ImageHandler:
                 )
                 return str(source)
 
+            source_suffix = source.suffix.lower()
+            should_reencode = (
+                source_suffix not in self._AIOCQHTTP_SEND_DIRECT_FORMATS
+                or image.format not in {"JPEG", "MPO"}
+            )
             if (
-                stat.st_size <= self._AIOCQHTTP_SEND_MAX_BYTES
+                not should_reencode
+                and stat.st_size <= self._AIOCQHTTP_SEND_MAX_BYTES
                 and self._delivery_resize_ratio(*image.size) >= 0.999
             ):
                 return str(source)
