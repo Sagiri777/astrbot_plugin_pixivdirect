@@ -876,6 +876,7 @@ def pixiv(
     accept_language: str = "zh-CN",
     proxy: str | None = None,
     timeout: int = 30,
+    connect_timeout: float = 8.0,
     dns_timeout: int = 3,
     dns_update_hosts: bool = False,
     dns_server: str = "doh.dns.sb",
@@ -883,6 +884,8 @@ def pixiv(
     runtime_dns_resolve: bool = False,
     max_retries: int = 3,
     connect_probe_timeout: float = 2.0,
+    search_runtime_ip_candidate_limit: int | None = None,
+    search_retryable_failure_budget: int | None = None,
 ) -> dict[str, Any]:
     """
     单入口函数：调用后即可访问 Pixiv 服务（API + 图片）。
@@ -898,6 +901,19 @@ def pixiv(
     normalized_bypass_mode = str(bypass_mode or "auto").strip().lower()
     if normalized_bypass_mode not in {"auto", "pixez", "accesser"}:
         normalized_bypass_mode = "auto"
+    search_budget_enabled = (
+        action in {"search_illust", "search_user"} and runtime_dns_resolve
+    )
+    runtime_ip_candidate_limit = (
+        max(1, int(search_runtime_ip_candidate_limit))
+        if search_budget_enabled and search_runtime_ip_candidate_limit is not None
+        else None
+    )
+    retryable_failure_budget = (
+        max(1, int(search_retryable_failure_budget))
+        if search_budget_enabled and search_retryable_failure_budget is not None
+        else None
+    )
 
     session = _get_session()
     host_map = dict(PIXEZ_HOST_MAP)
@@ -931,6 +947,8 @@ def pixiv(
         retryable_bypass_statuses = (
             {403} if action in {"search_illust", "search_user"} else set()
         )
+        retryable_failure_count = 0
+        stop_retry_iteration = False
         merged_headers = {
             "User-Agent": IMAGE_UA if image_mode else PIXIV_UA,
             "Accept-Language": accept_language,
@@ -979,7 +997,7 @@ def pixiv(
                             data=data,
                             headers=merged_headers,
                             proxies=proxies,
-                            timeout=(8, timeout),
+                            timeout=(connect_timeout, timeout),
                             verify=verify,
                         )
                 last_res = res
@@ -1002,7 +1020,7 @@ def pixiv(
                     data=data,
                     headers=merged_headers,
                     proxies=proxies,
-                    timeout=(8, timeout),
+                    timeout=(connect_timeout, timeout),
                     verify=verify,
                 )
             )
@@ -1023,9 +1041,48 @@ def pixiv(
                     data=data,
                     headers=bypass_headers,
                     proxies=proxies,
-                    timeout=(8, timeout),
+                    timeout=(connect_timeout, timeout),
                     verify=verify,
                 )
+
+        def _build_error_response(status_code: int, message: str) -> requests.Response:
+            response = requests.Response()
+            response.status_code = status_code
+            response.url = url
+            response._content = message.encode("utf-8")
+            response.encoding = "utf-8"
+            return response
+
+        def _limit_candidates(candidates: list[str], *, label: str) -> list[str]:
+            if (
+                runtime_ip_candidate_limit is None
+                or len(candidates) <= runtime_ip_candidate_limit
+            ):
+                return candidates
+            logger.warning(
+                "[pixivdirect] %s limiting %s candidates from %d to %d for fast fallback",
+                action,
+                label,
+                len(candidates),
+                runtime_ip_candidate_limit,
+            )
+            return candidates[:runtime_ip_candidate_limit]
+
+        def _consume_retryable_failure(kind: str, *, candidate: str) -> bool:
+            nonlocal retryable_failure_count
+            if retryable_failure_budget is None:
+                return False
+            retryable_failure_count += 1
+            if retryable_failure_count < retryable_failure_budget:
+                return False
+            logger.warning(
+                "[pixivdirect] %s exhausted retryable failure budget (%d) after %s on candidate %s",
+                action,
+                retryable_failure_budget,
+                kind,
+                candidate,
+            )
+            return True
 
         if not (bypass_sni and req_host in host_map):
             return _do_request()
@@ -1065,6 +1122,7 @@ def pixiv(
             for ip in ranked_live_ips:
                 if ip not in ip_candidates:
                     ip_candidates.append(ip)
+        ip_candidates = _limit_candidates(ip_candidates, label="runtime DNS")
 
         last_exc: Exception | None = None
         last_res: requests.Response | None = None
@@ -1082,6 +1140,9 @@ def pixiv(
                         and allow_accesser
                         and res.status_code in retryable_bypass_statuses
                     ):
+                        if _consume_retryable_failure("status", candidate=ip):
+                            stop_retry_iteration = True
+                            break
                         logger.warning(
                             "[pixivdirect] %s returned status %s via PixEz-style candidate %s, trying Accesser-style fallback",
                             action,
@@ -1096,6 +1157,12 @@ def pixiv(
                     RequestsSSLError,
                 ) as exc:
                     last_exc = exc
+                    if _consume_retryable_failure("network error", candidate=ip):
+                        stop_retry_iteration = True
+                        break
+
+            if stop_retry_iteration:
+                break
 
             if not allow_accesser:
                 continue
@@ -1111,6 +1178,9 @@ def pixiv(
                 if res.ok:
                     return res
                 if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
+                    if _consume_retryable_failure("status", candidate=ip):
+                        stop_retry_iteration = True
+                        break
                     logger.warning(
                         "[pixivdirect] %s returned status %s via Accesser-style candidate %s, trying next candidate",
                         action,
@@ -1128,11 +1198,25 @@ def pixiv(
                     normalized_bypass_mode,
                     exc,
                 )
+                if _consume_retryable_failure("network error", candidate=ip):
+                    stop_retry_iteration = True
+                    break
                 continue
+
+        if stop_retry_iteration:
+            logger.warning(
+                "[pixivdirect] %s stopping App API candidate iteration early for fast fallback",
+                action,
+            )
 
         # 仅在主域名候选全部失败后，再尝试 Accesser 风格的别名域名解析。
         alias_host = HOST_ALIAS_MAP.get(req_host)
-        if alias_host and runtime_dns_resolve and allow_accesser:
+        if (
+            alias_host
+            and runtime_dns_resolve
+            and allow_accesser
+            and not stop_retry_iteration
+        ):
             alias_cache_key = f"{alias_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
             alias_ips = _get_runtime_dns_cache(alias_cache_key)
             if alias_ips is None:
@@ -1148,9 +1232,11 @@ def pixiv(
             ranked_alias_ips, _ = _rank_ips_by_latency(
                 alias_ips, timeout=max(0.5, connect_probe_timeout)
             )
-            for ip in ranked_alias_ips:
-                if ip in ip_candidates:
-                    continue
+            alias_candidates = _limit_candidates(
+                [ip for ip in ranked_alias_ips if ip not in ip_candidates],
+                label="alias DNS",
+            )
+            for ip in alias_candidates:
                 if allow_pixez:
                     try:
                         attempted = True
@@ -1162,6 +1248,9 @@ def pixiv(
                             runtime_dns_resolve
                             and res.status_code in retryable_bypass_statuses
                         ):
+                            if _consume_retryable_failure("status", candidate=ip):
+                                stop_retry_iteration = True
+                                break
                             logger.warning(
                                 "[pixivdirect] %s returned status %s via PixEz-style alias candidate %s, trying Accesser-style fallback",
                                 action,
@@ -1176,7 +1265,12 @@ def pixiv(
                         RequestsSSLError,
                     ) as exc:
                         last_exc = exc
+                        if _consume_retryable_failure("network error", candidate=ip):
+                            stop_retry_iteration = True
+                            break
 
+                if stop_retry_iteration:
+                    break
                 try:
                     attempted = True
                     res = _do_request(
@@ -1191,6 +1285,9 @@ def pixiv(
                         runtime_dns_resolve
                         and res.status_code in retryable_bypass_statuses
                     ):
+                        if _consume_retryable_failure("status", candidate=ip):
+                            stop_retry_iteration = True
+                            break
                         logger.warning(
                             "[pixivdirect] %s returned status %s via Accesser-style alias candidate %s, trying next candidate",
                             action,
@@ -1212,6 +1309,9 @@ def pixiv(
                         normalized_bypass_mode,
                         exc,
                     )
+                    if _consume_retryable_failure("network error", candidate=ip):
+                        stop_retry_iteration = True
+                        break
                     continue
 
         # 搜索接口在所有 IP 候选都返回 403 时，再补一次原域名直连，
@@ -1238,9 +1338,13 @@ def pixiv(
                 return _do_request()
             except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
                 last_exc = exc
+                if search_budget_enabled:
+                    return _build_error_response(504, str(exc))
         if last_res is not None:
             return last_res
         if last_exc:
+            if search_budget_enabled:
+                return _build_error_response(504, str(last_exc))
             raise last_exc
         return _do_request()
 

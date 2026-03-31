@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.11.3] - 2026-03-31
+
+### Changed
+- `/pixiv search` 与 `/pixiv searchuser` 现在会为 App API 运行时 DNS 重试启用更保守的连接超时、候选数限制和可重试失败预算，连续超时或 `403` 时会更快转入 Web 搜索或代理兜底
+
+### Fixed
+- 修复搜索链路在连续命中超时、连接重置等网络异常时可能长时间串行遍历大量候选 IP，导致一次命令卡住数分钟的问题
+- 修复搜索候选快速失败场景下底层 SDK 可能直接抛出网络异常，导致上层无法继续进入 Web 搜索兜底的问题
+
 ## [1.11.2] - 2026-03-31
 
 ### Fixed

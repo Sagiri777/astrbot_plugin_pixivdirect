@@ -21,6 +21,9 @@ from .constants import (
     IDLE_CACHE_INTERVAL_SECONDS,
     MAX_RANDOM_PAGES,
     MIN_COMMAND_INTERVAL_SECONDS,
+    SEARCH_CONNECT_TIMEOUT_SECONDS,
+    SEARCH_RETRYABLE_FAILURE_BUDGET,
+    SEARCH_RUNTIME_IP_CANDIDATE_LIMIT,
 )
 from .emoji_reaction import EmojiReactionHandler
 from .image_handler import ImageHandler
@@ -28,7 +31,7 @@ from .pixivSDK import pixiv, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.11.2")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.11.3")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -170,6 +173,52 @@ class PixivDirectPlugin(Star):
             **kwargs,
         }
 
+    def _build_search_call_kwargs(
+        self,
+        *,
+        proxy: str | None = None,
+        runtime_dns_resolve: bool = False,
+        dns_update_hosts: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        call_kwargs = self._build_pixiv_call_kwargs(
+            proxy=proxy,
+            runtime_dns_resolve=runtime_dns_resolve,
+            dns_update_hosts=dns_update_hosts,
+            **kwargs,
+        )
+        call_kwargs.update(
+            {
+                "connect_timeout": max(
+                    0.5,
+                    float(
+                        self._config_manager.get_constant(
+                            "search_connect_timeout", SEARCH_CONNECT_TIMEOUT_SECONDS
+                        )
+                    ),
+                ),
+                "search_runtime_ip_candidate_limit": max(
+                    1,
+                    int(
+                        self._config_manager.get_constant(
+                            "search_runtime_ip_candidate_limit",
+                            SEARCH_RUNTIME_IP_CANDIDATE_LIMIT,
+                        )
+                    ),
+                ),
+                "search_retryable_failure_budget": max(
+                    1,
+                    int(
+                        self._config_manager.get_constant(
+                            "search_retryable_failure_budget",
+                            SEARCH_RETRYABLE_FAILURE_BUDGET,
+                        )
+                    ),
+                ),
+            }
+        )
+        return call_kwargs
+
     @staticmethod
     def _is_search_retryable_result(result: dict[str, Any]) -> bool:
         return not result.get("ok") and result.get("status") in {
@@ -195,7 +244,7 @@ class PixivDirectPlugin(Star):
         proxy: str | None = None,
         **kwargs: Any,
     ) -> dict[str, Any]:
-        call_kwargs = self._build_pixiv_call_kwargs(proxy=proxy, **kwargs)
+        call_kwargs = self._build_search_call_kwargs(proxy=proxy, **kwargs)
         result = await self._invoke_pixiv(action, params, **call_kwargs)
 
         bypass_mode = self._effective_bypass_mode()
@@ -211,7 +260,7 @@ class PixivDirectPlugin(Star):
                 bypass_mode,
             )
             await self._refresh_dns_cache(reason=f"retry:{action}")
-            retry_kwargs = self._build_pixiv_call_kwargs(
+            retry_kwargs = self._build_search_call_kwargs(
                 runtime_dns_resolve=True,
                 **kwargs,
             )
