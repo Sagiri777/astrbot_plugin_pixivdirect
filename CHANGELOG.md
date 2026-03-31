@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.5] - 2026-03-31
+
+### Fixed
+- 修复 `/pixiv search` 与 `/pixiv searchuser` 在运行时 DNS 重试时，命中返回 `403` 的旧 IP 后会直接结束而不继续尝试后续候选 IP 的问题
+- 现在搜索接口在 IP 直连分支收到 `403` 时会继续尝试动态解析得到的其他候选 IP，降低反复卡在失效或受限固定 IP 上的概率
+
 ## [1.10.4] - 2026-03-31
 
 ### Changed

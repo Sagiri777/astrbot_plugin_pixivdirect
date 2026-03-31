@@ -23,6 +23,8 @@ from requests.exceptions import SSLError as RequestsSSLError
 from requests.exceptions import Timeout as RequestsTimeout
 from requests.utils import get_environ_proxies
 
+from astrbot.api import logger
+
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # PixEz host map: fixed IPv4 for CN SNI bypass.
@@ -672,6 +674,9 @@ def pixiv(
         with_auth: bool = False,
         image_mode: bool = False,
     ) -> requests.Response:
+        retryable_bypass_statuses = (
+            {403} if action in {"search_illust", "search_user"} else set()
+        )
         merged_headers = {
             "User-Agent": IMAGE_UA if image_mode else PIXIV_UA,
             "Accept-Language": accept_language,
@@ -781,13 +786,14 @@ def pixiv(
                     ip_candidates.append(ip)
 
         last_exc: Exception | None = None
+        last_res: requests.Response | None = None
         attempted = False
         for ip in ip_candidates:
             try:
                 attempted = True
                 bypass_headers = dict(merged_headers)
                 bypass_headers["Host"] = req_host
-                return session.request(
+                res = session.request(
                     method=method,
                     url=_url_with_ip(ip),
                     params=req_params,
@@ -796,6 +802,16 @@ def pixiv(
                     proxies=proxies,
                     timeout=(8, timeout),
                 )
+                last_res = res
+                if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
+                    logger.warning(
+                        "[pixivdirect] %s returned status %s via IP %s, trying next candidate",
+                        action,
+                        res.status_code,
+                        ip,
+                    )
+                    continue
+                return res
             except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
                 last_exc = exc
                 continue
@@ -825,7 +841,7 @@ def pixiv(
                     attempted = True
                     bypass_headers = dict(merged_headers)
                     bypass_headers["Host"] = req_host
-                    return session.request(
+                    res = session.request(
                         method=method,
                         url=_url_with_ip(ip),
                         params=req_params,
@@ -834,6 +850,19 @@ def pixiv(
                         proxies=proxies,
                         timeout=(8, timeout),
                     )
+                    last_res = res
+                    if (
+                        runtime_dns_resolve
+                        and res.status_code in retryable_bypass_statuses
+                    ):
+                        logger.warning(
+                            "[pixivdirect] %s returned status %s via alias IP %s, trying next candidate",
+                            action,
+                            res.status_code,
+                            ip,
+                        )
+                        continue
+                    return res
                 except (
                     RequestsConnectionError,
                     RequestsTimeout,
@@ -848,6 +877,8 @@ def pixiv(
                 return _do_request()
             except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
                 last_exc = exc
+        if last_res is not None:
+            return last_res
         if last_exc:
             raise last_exc
         return _do_request()
