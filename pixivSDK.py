@@ -1232,7 +1232,15 @@ def pixiv(
     api_params = dict(params)
     if action == "search_illust":
         api_params.setdefault("filter", PIXIV_APP_FILTER)
-        api_params.setdefault("merge_plain_keyword_results", True)
+        if isinstance(api_params.get("include_translated_tag_results"), bool):
+            api_params["include_translated_tag_results"] = (
+                "true" if api_params["include_translated_tag_results"] else "false"
+            )
+        if isinstance(api_params.get("merge_plain_keyword_results"), bool):
+            api_params["merge_plain_keyword_results"] = (
+                "true" if api_params["merge_plain_keyword_results"] else "false"
+            )
+        api_params.setdefault("merge_plain_keyword_results", "true")
     elif action == "search_user":
         api_params.setdefault("filter", PIXIV_APP_FILTER)
 

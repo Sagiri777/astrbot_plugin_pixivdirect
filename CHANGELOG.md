@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.6] - 2026-03-31
+
+### Fixed
+- 修复 Pixiv 搜索接口参数中的 `include_translated_tag_results` 与 `merge_plain_keyword_results` 仍以 Python 布尔值发送，导致重试后接口返回 `400 invalid value` 的问题
+- 搜索请求现在会将上述布尔参数规范化为 Pixiv 接口接受的 `"true"` / `"false"` 字符串
+
 ## [1.10.5] - 2026-03-31
 
 ### Fixed
