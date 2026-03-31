@@ -28,7 +28,7 @@ from .pixivSDK import pixiv
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.2")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.3")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -197,7 +197,7 @@ class PixivDirectPlugin(Star):
         if dns_update_hosts:
             await self._mark_dns_refreshed()
 
-        transient_statuses = {429, 440, 500, 502, 503, 504}
+        transient_statuses = {403, 429, 440, 500, 502, 503, 504}
         if (
             not result.get("ok")
             and action in {"search_illust", "search_user"}
@@ -212,6 +212,7 @@ class PixivDirectPlugin(Star):
             retry_kwargs = {
                 **call_kwargs,
                 "dns_update_hosts": True,
+                "runtime_dns_resolve": True,
             }
             result = await asyncio.to_thread(
                 pixiv,

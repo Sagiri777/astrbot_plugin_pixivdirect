@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.3] - 2026-03-31
+
+### Fixed
+- `/pixiv search` 与 `/pixiv searchuser` 现在会在 Pixiv 返回 `403` 时强制刷新 DNS，并启用运行时解析后重试，降低搜索接口卡在失效固定 IP 上导致持续失败的概率
+
 ## [1.10.2] - 2026-03-31
 
 ### Added
