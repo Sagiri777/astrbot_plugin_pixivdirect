@@ -620,12 +620,19 @@ class ImageHandler:
         """Format a Pixiv API error result into a user-friendly message."""
         status = result.get("status")
         error = result.get("error")
+        suffix_parts: list[str] = []
+        fallback_chain = result.get("fallback_chain")
+        if isinstance(fallback_chain, list) and fallback_chain:
+            suffix_parts.append(" -> ".join(str(part) for part in fallback_chain))
+        if result.get("proxy_used"):
+            suffix_parts.append("已尝试代理")
+        suffix = f"（{', '.join(suffix_parts)}）" if suffix_parts else ""
         if isinstance(error, dict):
             for key in ("message", "user_message"):
                 value = error.get(key)
                 if isinstance(value, str) and value.strip():
-                    return f"Pixiv API 错误（状态码={status}）：{value}"
-            return f"Pixiv API 错误（状态码={status}）：{error}"
+                    return f"Pixiv API 错误（状态码={status}）{suffix}：{value}"
+            return f"Pixiv API 错误（状态码={status}）{suffix}：{error}"
         if error:
-            return f"Pixiv API 错误（状态码={status}）：{error}"
-        return f"Pixiv API 请求失败（状态码={status}）。"
+            return f"Pixiv API 错误（状态码={status}）{suffix}：{error}"
+        return f"Pixiv API 请求失败（状态码={status}）{suffix}。"

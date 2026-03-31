@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import requests
 import urllib3
@@ -54,6 +54,8 @@ PIXIV_UA = "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"
 IMAGE_UA = "PixivIOSApp/5.8.0"
 IMAGE_REFERER = "https://app-api.pixiv.net/"
 PIXIV_APP_FILTER = "for_android"
+PIXIV_WEB_BASE = "https://www.pixiv.net"
+PIXIV_WEB_REFERER = "https://www.pixiv.net/"
 
 # Process-level caches for runtime DNS resolve.
 _RUN_RESOLVED_IPS: dict[str, list[str]] = {}
@@ -78,6 +80,26 @@ API_ACTIONS: dict[str, str] = {
     "user_bookmarks_illust": "/v1/user/bookmarks/illust",
     "search_user": "/v1/search/user",
     "ugoira_metadata": "/v1/ugoira/metadata",
+}
+
+WEB_SEARCH_SORT_MAP: dict[str, str] = {
+    "date_desc": "date_d",
+    "date_asc": "date",
+    "popular_desc": "popular_d",
+    "popular_male_desc": "popular_male_d",
+    "popular_female_desc": "popular_female_d",
+}
+
+WEB_SEARCH_TARGET_MAP: dict[str, str] = {
+    "partial_match_for_tags": "s_tag",
+    "exact_match_for_tags": "s_tag_full",
+    "title_and_caption": "s_tc",
+}
+
+WEB_SEARCH_DURATION_MAP: dict[str, str] = {
+    "within_last_day": "1d",
+    "within_last_week": "1w",
+    "within_last_month": "1m",
 }
 
 
@@ -670,6 +692,108 @@ def _safe_download_filename(url: str, fallback_id: Any) -> str:
     return name or f"illust_{fallback_id or 'unknown'}.bin"
 
 
+def _normalize_web_illust_item(item: dict[str, Any]) -> dict[str, Any]:
+    illust_id = item.get("id")
+    title = str(item.get("title") or "（无标题）")
+    user_id = item.get("userId") or item.get("user_id")
+    user_name = item.get("userName") or item.get("user_name") or "未知"
+    bookmark_count = item.get("bookmarkCount") or item.get("bookmark_count")
+    x_restrict = item.get("xRestrict")
+    if not isinstance(x_restrict, int):
+        try:
+            x_restrict = int(x_restrict)
+        except (TypeError, ValueError):
+            x_restrict = 0
+
+    tags_raw = item.get("tags")
+    tags: list[dict[str, Any]] = []
+    if isinstance(tags_raw, list):
+        for tag in tags_raw:
+            if isinstance(tag, str) and tag:
+                tags.append({"name": tag})
+            elif isinstance(tag, dict):
+                name = tag.get("tag") or tag.get("name")
+                translated = tag.get("translation") or tag.get("translated_name")
+                normalized_tag: dict[str, Any] = {}
+                if isinstance(name, str) and name:
+                    normalized_tag["name"] = name
+                if isinstance(translated, str) and translated:
+                    normalized_tag["translated_name"] = translated
+                if normalized_tag:
+                    tags.append(normalized_tag)
+
+    image_urls = (
+        item.get("image_urls") if isinstance(item.get("image_urls"), dict) else {}
+    )
+    urls = item.get("urls") if isinstance(item.get("urls"), dict) else {}
+    preview_url = (
+        image_urls.get("large")
+        or image_urls.get("medium")
+        or urls.get("thumb")
+        or item.get("url")
+        or item.get("profileImageUrl")
+    )
+    square_url = urls.get("small") or urls.get("thumb") or preview_url
+
+    return {
+        "id": illust_id,
+        "title": title,
+        "total_bookmarks": bookmark_count,
+        "x_restrict": x_restrict,
+        "page_count": item.get("pageCount") or item.get("page_count") or 1,
+        "tags": tags,
+        "user": {
+            "id": user_id,
+            "name": user_name,
+        },
+        "image_urls": {
+            "large": preview_url,
+            "medium": preview_url,
+            "square_medium": square_url,
+        },
+    }
+
+
+def _normalize_web_user_preview(item: dict[str, Any]) -> dict[str, Any]:
+    user_id = item.get("userId") or item.get("user_id")
+    user_name = item.get("userName") or item.get("user_name") or "未知"
+    account = item.get("userAccount") or item.get("account") or ""
+    illusts_raw = item.get("illusts")
+    illusts: list[dict[str, Any]] = []
+    if isinstance(illusts_raw, list):
+        for illust in illusts_raw:
+            if isinstance(illust, dict):
+                illusts.append(
+                    {
+                        "id": illust.get("id"),
+                        "title": str(illust.get("title") or "（无标题）"),
+                    }
+                )
+    return {
+        "user": {
+            "id": user_id,
+            "name": user_name,
+            "account": account,
+            "profile": {
+                "total_illusts": item.get("illustsTotal")
+                or item.get("illust_total")
+                or 0,
+                "total_manga": item.get("mangaTotal") or item.get("manga_total") or 0,
+            },
+        },
+        "illusts": illusts,
+    }
+
+
+def _extract_web_search_body(payload: dict[str, Any]) -> dict[str, Any]:
+    if payload.get("error") is False and isinstance(payload.get("body"), dict):
+        return payload["body"]
+    body = payload.get("body")
+    if isinstance(body, dict):
+        return body
+    return {}
+
+
 @contextmanager
 def _patched_dns_resolution(host_map: dict[str, str]):
     if not host_map:
@@ -748,6 +872,7 @@ def pixiv(
     refresh_token: str | None = None,
     access_token: str | None = None,
     bypass_sni: bool = True,
+    bypass_mode: str = "auto",
     accept_language: str = "zh-CN",
     proxy: str | None = None,
     timeout: int = 30,
@@ -770,6 +895,9 @@ def pixiv(
     params = params or {}
     proxies = {"http": proxy, "https": proxy} if proxy else None
     current_user_id: int | None = None
+    normalized_bypass_mode = str(bypass_mode or "auto").strip().lower()
+    if normalized_bypass_mode not in {"auto", "pixez", "accesser"}:
+        normalized_bypass_mode = "auto"
 
     session = _get_session()
     host_map = dict(PIXEZ_HOST_MAP)
@@ -906,11 +1034,10 @@ def pixiv(
         if has_proxy:
             return _do_request()
 
-        # PixEz-first:
-        # 1. 默认优先使用缓存 IP 直连
-        # 2. 直连时禁用 TLS SNI，并跳过证书校验
-        # 3. 同一候选失败后，再回退到 Accesser 风格的域名请求 + DNS 覆盖
-        # 4. 候选依次来自：缓存 IP -> 内置 IP -> 目标域名 DoH IP -> 别名域名 DoH IP
+        allow_pixez = normalized_bypass_mode in {"auto", "pixez"}
+        allow_accesser = normalized_bypass_mode in {"auto", "accesser"}
+
+        # `auto` 保持当前混合回退顺序；`pixez` 与 `accesser` 则会只启用对应分支。
         ip_candidates: list[str] = []
         cached_ip = host_map.get(req_host)
         if cached_ip and cached_ip not in ip_candidates:
@@ -943,23 +1070,35 @@ def pixiv(
         last_res: requests.Response | None = None
         attempted = False
         for ip in ip_candidates:
-            try:
-                attempted = True
-                res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
-                last_res = res
-                if res.ok:
-                    return res
-                if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
-                    logger.warning(
-                        "[pixivdirect] %s returned status %s via PixEz-style candidate %s, trying Accesser-style fallback",
-                        action,
-                        res.status_code,
-                        ip,
-                    )
-                else:
-                    return res
-            except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
-                last_exc = exc
+            if allow_pixez:
+                try:
+                    attempted = True
+                    res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
+                    last_res = res
+                    if res.ok:
+                        return res
+                    if (
+                        runtime_dns_resolve
+                        and allow_accesser
+                        and res.status_code in retryable_bypass_statuses
+                    ):
+                        logger.warning(
+                            "[pixivdirect] %s returned status %s via PixEz-style candidate %s, trying Accesser-style fallback",
+                            action,
+                            res.status_code,
+                            ip,
+                        )
+                    else:
+                        return res
+                except (
+                    RequestsConnectionError,
+                    RequestsTimeout,
+                    RequestsSSLError,
+                ) as exc:
+                    last_exc = exc
+
+            if not allow_accesser:
+                continue
 
             try:
                 attempted = True
@@ -983,16 +1122,17 @@ def pixiv(
             except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
                 last_exc = exc
                 logger.warning(
-                    "[pixivdirect] %s failed on candidate %s with PixEz-style first pass and Accesser-style fallback error=%s",
+                    "[pixivdirect] %s failed on candidate %s with bypass_mode=%s error=%s",
                     action,
                     ip,
+                    normalized_bypass_mode,
                     exc,
                 )
                 continue
 
         # 仅在主域名候选全部失败后，再尝试 Accesser 风格的别名域名解析。
         alias_host = HOST_ALIAS_MAP.get(req_host)
-        if alias_host and runtime_dns_resolve:
+        if alias_host and runtime_dns_resolve and allow_accesser:
             alias_cache_key = f"{alias_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
             alias_ips = _get_runtime_dns_cache(alias_cache_key)
             if alias_ips is None:
@@ -1011,30 +1151,31 @@ def pixiv(
             for ip in ranked_alias_ips:
                 if ip in ip_candidates:
                     continue
-                try:
-                    attempted = True
-                    res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
-                    last_res = res
-                    if res.ok:
-                        return res
-                    if (
-                        runtime_dns_resolve
-                        and res.status_code in retryable_bypass_statuses
-                    ):
-                        logger.warning(
-                            "[pixivdirect] %s returned status %s via PixEz-style alias candidate %s, trying Accesser-style fallback",
-                            action,
-                            res.status_code,
-                            ip,
-                        )
-                    else:
-                        return res
-                except (
-                    RequestsConnectionError,
-                    RequestsTimeout,
-                    RequestsSSLError,
-                ) as exc:
-                    last_exc = exc
+                if allow_pixez:
+                    try:
+                        attempted = True
+                        res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
+                        last_res = res
+                        if res.ok:
+                            return res
+                        if (
+                            runtime_dns_resolve
+                            and res.status_code in retryable_bypass_statuses
+                        ):
+                            logger.warning(
+                                "[pixivdirect] %s returned status %s via PixEz-style alias candidate %s, trying Accesser-style fallback",
+                                action,
+                                res.status_code,
+                                ip,
+                            )
+                        else:
+                            return res
+                    except (
+                        RequestsConnectionError,
+                        RequestsTimeout,
+                        RequestsSSLError,
+                    ) as exc:
+                        last_exc = exc
 
                 try:
                     attempted = True
@@ -1065,9 +1206,10 @@ def pixiv(
                 ) as exc:
                     last_exc = exc
                     logger.warning(
-                        "[pixivdirect] %s failed on alias candidate %s with PixEz-style first pass and Accesser-style fallback error=%s",
+                        "[pixivdirect] %s failed on alias candidate %s with bypass_mode=%s error=%s",
                         action,
                         ip,
+                        normalized_bypass_mode,
                         exc,
                     )
                     continue
@@ -1439,6 +1581,93 @@ def pixiv(
             "status": zip_res.status_code,
             "content_type": zip_res.headers.get("Content-Type"),
             "content": zip_res.content,
+        }
+
+    if action in {"web_search_illust", "web_search_user"}:
+        keyword = str(params.get("word") or "").strip()
+        if not keyword:
+            raise ValueError(f"action={action} requires params.word")
+
+        page = max(1, int(params.get("page", 1) or 1))
+        endpoint = (
+            f"{PIXIV_WEB_BASE}/ajax/search/artworks/{quote(keyword)}"
+            if action == "web_search_illust"
+            else f"{PIXIV_WEB_BASE}/ajax/search/users/{quote(keyword)}"
+        )
+        web_params: dict[str, Any] = {
+            "word": keyword,
+            "p": page,
+        }
+        sort = str(params.get("sort") or "date_desc").strip().lower()
+        mapped_sort = WEB_SEARCH_SORT_MAP.get(sort)
+        if mapped_sort:
+            web_params["order"] = mapped_sort
+
+        target = str(params.get("search_target") or "").strip().lower()
+        mapped_target = WEB_SEARCH_TARGET_MAP.get(target)
+        if mapped_target and action == "web_search_illust":
+            web_params["s_mode"] = mapped_target
+
+        duration = str(params.get("duration") or "").strip().lower()
+        mapped_duration = WEB_SEARCH_DURATION_MAP.get(duration)
+        if mapped_duration and action == "web_search_illust":
+            web_params["mode"] = mapped_duration
+
+        web_res = send(
+            "GET",
+            endpoint,
+            req_params=web_params,
+            headers={
+                "Referer": PIXIV_WEB_REFERER,
+                "X-Requested-With": "XMLHttpRequest",
+            },
+        )
+        try:
+            payload = web_res.json()
+        except Exception:
+            payload = {"error": True, "message": web_res.text}
+
+        body = _extract_web_search_body(payload if isinstance(payload, dict) else {})
+        if action == "web_search_illust":
+            illust_container = body.get("illustManga")
+            if not isinstance(illust_container, dict):
+                illust_container = body
+            items = illust_container.get("data")
+            if not isinstance(items, list):
+                items = []
+            total = illust_container.get("total")
+            normalized = [
+                _normalize_web_illust_item(item)
+                for item in items
+                if isinstance(item, dict)
+            ]
+            data = {"illusts": normalized, "total": total}
+        else:
+            users = body.get("users")
+            if not isinstance(users, list):
+                users = body.get("user_previews")
+            if not isinstance(users, list):
+                users = []
+            total = body.get("total")
+            data = {
+                "user_previews": [
+                    _normalize_web_user_preview(item)
+                    for item in users
+                    if isinstance(item, dict)
+                ],
+                "total": total,
+            }
+
+        return {
+            "ok": web_res.ok and not bool(payload.get("error"))
+            if isinstance(payload, dict)
+            else web_res.ok,
+            "action": action,
+            "status": web_res.status_code,
+            "data": data,
+            "error": payload.get("message") if isinstance(payload, dict) else None,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
         }
 
     # 4) Pixiv API 访问。

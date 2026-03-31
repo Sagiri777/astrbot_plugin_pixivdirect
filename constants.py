@@ -165,6 +165,14 @@ EMOJI_MAP: dict[str, int] = {
 
 # Plugin configuration constants
 DISABLE_BYPASS_SNI: bool = False
+BYPASS_MODE_AUTO: str = "auto"
+BYPASS_MODE_PIXEZ: str = "pixez"
+BYPASS_MODE_ACCESSER: str = "accesser"
+BYPASS_MODE_OPTIONS: tuple[str, ...] = (
+    BYPASS_MODE_AUTO,
+    BYPASS_MODE_PIXEZ,
+    BYPASS_MODE_ACCESSER,
+)
 DNS_REFRESH_INTERVAL_SECONDS: float = 24 * 60 * 60
 DNS_REFRESH_RETRY_SECONDS: float = 60
 RANDOM_DOWNLOAD_CONCURRENCY: int = 3
@@ -207,6 +215,8 @@ SEARCH_DURATION_OPTIONS: list[str] = [
 SEARCH_USER_SORT_OPTIONS: list[str] = [
     "date_desc",
 ]
+SEARCH_PROXY_DAILY_THRESHOLD: int = 3
+SEARCH_PROXY_STICKY_DAYS: int = 3
 
 # Stage-specific emoji names
 STAGE_EMOJIS: dict[str, list[str]] = {

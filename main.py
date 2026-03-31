@@ -17,7 +17,6 @@ from .config_manager import ConfigManager
 from .constants import (
     DEFAULT_CACHE_SIZE,
     DEFAULT_POOL_KEY,
-    DISABLE_BYPASS_SNI,
     IDLE_CACHE_COUNT,
     IDLE_CACHE_INTERVAL_SECONDS,
     MAX_RANDOM_PAGES,
@@ -29,7 +28,7 @@ from .pixivSDK import pixiv, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.11")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.11.0")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -144,14 +143,172 @@ class PixivDirectPlugin(Star):
             self._dns_next_refresh_at = 0.0
         await self._refresh_dns_cache(reason="manual")
 
-    async def _refresh_dns_cache(self, *, reason: str) -> bool:
-        disable_bypass_sni = bool(
-            self._config_manager.get_constant("disable_bypass_sni", DISABLE_BYPASS_SNI)
+    def _effective_bypass_mode(self) -> str:
+        return self._config_manager.get_effective_bypass_mode()
+
+    def _build_pixiv_call_kwargs(
+        self,
+        *,
+        proxy: str | None = None,
+        runtime_dns_resolve: bool = False,
+        dns_update_hosts: bool = False,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        bypass_mode = self._effective_bypass_mode()
+        return {
+            "bypass_sni": bypass_mode != "disabled" and not proxy,
+            "bypass_mode": bypass_mode if bypass_mode != "disabled" else "auto",
+            "proxy": proxy,
+            "dns_cache_file": str(self._config_manager.host_map_file),
+            "dns_update_hosts": dns_update_hosts,
+            "runtime_dns_resolve": runtime_dns_resolve and not proxy,
+            "max_retries": 2,
+            **kwargs,
+        }
+
+    @staticmethod
+    def _is_search_retryable_result(result: dict[str, Any]) -> bool:
+        return not result.get("ok") and result.get("status") in {
+            403,
+            429,
+            440,
+            500,
+            502,
+            503,
+            504,
+        }
+
+    async def _invoke_pixiv(
+        self, action: str, params: dict[str, Any], **call_kwargs: Any
+    ) -> dict[str, Any]:
+        return await asyncio.to_thread(pixiv, action, params, **call_kwargs)
+
+    async def _run_search_request_chain(
+        self,
+        action: str,
+        params: dict[str, Any],
+        *,
+        proxy: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        call_kwargs = self._build_pixiv_call_kwargs(proxy=proxy, **kwargs)
+        result = await self._invoke_pixiv(action, params, **call_kwargs)
+
+        bypass_mode = self._effective_bypass_mode()
+        if (
+            proxy is None
+            and self._is_search_retryable_result(result)
+            and bypass_mode != "disabled"
+        ):
+            logger.warning(
+                "[pixivdirect] Retrying %s after transient status %s with bypass_mode=%s",
+                action,
+                result.get("status"),
+                bypass_mode,
+            )
+            await self._refresh_dns_cache(reason=f"retry:{action}")
+            retry_kwargs = self._build_pixiv_call_kwargs(
+                runtime_dns_resolve=True,
+                **kwargs,
+            )
+            result = await self._invoke_pixiv(action, params, **retry_kwargs)
+            await self._mark_dns_refreshed()
+
+        if result.get("ok"):
+            return result
+        if not self._is_search_retryable_result(result):
+            return result
+
+        web_action = (
+            "web_search_illust" if action == "search_illust" else "web_search_user"
         )
-        if disable_bypass_sni:
+        web_params = dict(params)
+        if "offset" in web_params:
+            try:
+                web_params["page"] = max(1, int(web_params["offset"]) // 30 + 1)
+            except (TypeError, ValueError):
+                web_params["page"] = 1
+        logger.warning(
+            "[pixivdirect] %s failed with status %s, trying %s%s",
+            action,
+            result.get("status"),
+            web_action,
+            " via proxy" if proxy else "",
+        )
+        web_result = await self._invoke_pixiv(web_action, web_params, **call_kwargs)
+        if web_result.get("ok"):
+            web_result["fallback_chain"] = ["app_api", "web"]
+            return web_result
+
+        web_result["fallback_chain"] = ["app_api", "web"]
+        return web_result
+
+    async def _run_search_with_recovery(
+        self, action: str, params: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
+        proxy_url = self._config_manager.get_search_proxy_url()
+        proxy_available = self._config_manager.is_search_proxy_configured() and bool(
+            proxy_url
+        )
+
+        if proxy_available and self._config_manager.is_search_proxy_active():
+            logger.warning(
+                "[pixivdirect] Search proxy-first mode active until %s for %s",
+                self._config_manager.search_proxy_state.get("proxy_until"),
+                action,
+            )
+            proxied_result = await self._run_search_request_chain(
+                action, params, proxy=proxy_url, **kwargs
+            )
+            if proxied_result.get("ok"):
+                proxied_result["proxy_used"] = True
+                proxied_result["fallback_chain"] = [
+                    "proxy",
+                    *proxied_result.get("fallback_chain", []),
+                ]
+                return proxied_result
+            logger.warning(
+                "[pixivdirect] Proxy-first search failed for %s, falling back to normal chain",
+                action,
+            )
+            return await self._run_search_request_chain(action, params, **kwargs)
+
+        result = await self._run_search_request_chain(action, params, **kwargs)
+        if result.get("ok"):
+            return result
+
+        if proxy_available:
+            await self._config_manager.record_search_proxy_rescue(
+                reason=f"{action}:{result.get('status')}"
+            )
+            logger.warning(
+                "[pixivdirect] Escalating %s to configured search proxy", action
+            )
+            proxied_result = await self._run_search_request_chain(
+                action, params, proxy=proxy_url, **kwargs
+            )
+            proxied_result["proxy_used"] = True
+            proxied_result["fallback_chain"] = [
+                *result.get("fallback_chain", ["app_api", "web"]),
+                "proxy",
+            ]
+            return proxied_result
+
+        return result
+
+    async def _refresh_dns_cache(self, *, reason: str) -> bool:
+        bypass_mode = self._effective_bypass_mode()
+        if bypass_mode == "disabled":
             await self._mark_dns_refreshed()
             logger.info(
                 "[pixivdirect] Skip DNS refresh on %s because disable_bypass_sni=true",
+                reason,
+            )
+            return False
+        if bypass_mode == "accesser":
+            await self._mark_dns_refreshed()
+            logger.info(
+                "[pixivdirect] Skip PixEz host refresh on %s because bypass_mode=accesser",
                 reason,
             )
             return False
@@ -199,49 +356,13 @@ class PixivDirectPlugin(Star):
     async def _pixiv_call(
         self, action: str, params: dict[str, Any], **kwargs: Any
     ) -> dict[str, Any]:
-        disable_bypass_sni = bool(
-            self._config_manager.get_constant("disable_bypass_sni", DISABLE_BYPASS_SNI)
-        )
-        call_kwargs = {
-            "bypass_sni": not disable_bypass_sni,
-            "dns_cache_file": str(self._config_manager.host_map_file),
-            "dns_update_hosts": False,
-            "runtime_dns_resolve": False,
-            "max_retries": 2,
-            **kwargs,
-        }
-        result = await asyncio.to_thread(
-            pixiv,
+        if action in {"search_illust", "search_user"}:
+            return await self._run_search_with_recovery(action, params, **kwargs)
+        return await self._invoke_pixiv(
             action,
             params,
-            **call_kwargs,
+            **self._build_pixiv_call_kwargs(**kwargs),
         )
-
-        transient_statuses = {403, 429, 440, 500, 502, 503, 504}
-        if (
-            not result.get("ok")
-            and action in {"search_illust", "search_user"}
-            and result.get("status") in transient_statuses
-            and not disable_bypass_sni
-        ):
-            logger.warning(
-                "[pixivdirect] Retrying %s after transient status %s",
-                action,
-                result.get("status"),
-            )
-            await self._refresh_dns_cache(reason=f"retry:{action}")
-            retry_kwargs = {
-                **call_kwargs,
-                "runtime_dns_resolve": True,
-            }
-            result = await asyncio.to_thread(
-                pixiv,
-                action,
-                params,
-                **retry_kwargs,
-            )
-            await self._mark_dns_refreshed()
-        return result
 
     async def _idle_cache_loop(self) -> None:
         while True:
@@ -456,6 +577,16 @@ class PixivDirectPlugin(Star):
         elif sub_cmd == "config":
             async for result in self._command_handler.handle_random(
                 event, ["random", "config", *tokens[1:]]
+            ):
+                yield result
+        elif sub_cmd == "bypass":
+            async for result in self._command_handler.handle_bypass(
+                event, ["bypass", *tokens[1:]]
+            ):
+                yield result
+        elif sub_cmd == "proxy":
+            async for result in self._command_handler.handle_proxy(
+                event, ["proxy", *tokens[1:]]
             ):
                 yield result
         elif sub_cmd == "groupblock":

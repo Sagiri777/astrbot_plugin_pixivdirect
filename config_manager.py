@@ -8,7 +8,14 @@ from typing import Any
 
 from astrbot.api import logger
 
-from .constants import CONFIGURABLE_CONSTANT_ALIASES, CONFIGURABLE_CONSTANTS
+from .constants import (
+    BYPASS_MODE_AUTO,
+    BYPASS_MODE_OPTIONS,
+    CONFIGURABLE_CONSTANT_ALIASES,
+    CONFIGURABLE_CONSTANTS,
+    SEARCH_PROXY_DAILY_THRESHOLD,
+    SEARCH_PROXY_STICKY_DAYS,
+)
 
 
 class ConfigManager:
@@ -35,6 +42,9 @@ class ConfigManager:
         self._image_quality_file = plugin_data_dir / "image_quality_config.json"
         self._random_usage_stats_file = plugin_data_dir / "random_usage_stats.json"
         self._custom_constants_file = plugin_data_dir / "custom_constants.json"
+        self._bypass_mode_file = plugin_data_dir / "bypass_mode.json"
+        self._search_proxy_config_file = plugin_data_dir / "search_proxy_config.json"
+        self._search_proxy_state_file = plugin_data_dir / "search_proxy_state.json"
 
         # Configuration state
         self._storage_lock = asyncio.Lock()
@@ -54,6 +64,18 @@ class ConfigManager:
         self._image_quality_config: dict[str, str] = {}
         self._random_usage_stats: dict[str, dict[str, dict[str, Any]]] = {}
         self._custom_constants: dict[str, Any] = {}
+        self._bypass_mode: str = BYPASS_MODE_AUTO
+        self._search_proxy_config: dict[str, Any] = {
+            "enabled": False,
+            "proxy_url": "",
+            "daily_threshold": SEARCH_PROXY_DAILY_THRESHOLD,
+            "sticky_days": SEARCH_PROXY_STICKY_DAYS,
+        }
+        self._search_proxy_state: dict[str, Any] = {
+            "daily_rescue_counts": {},
+            "proxy_until": None,
+            "last_reason": "",
+        }
 
     @property
     def cache_dir(self) -> Path:
@@ -146,6 +168,18 @@ class ConfigManager:
     @property
     def random_usage_stats(self) -> dict[str, dict[str, dict[str, Any]]]:
         return self._random_usage_stats
+
+    @property
+    def bypass_mode(self) -> str:
+        return self._bypass_mode
+
+    @property
+    def search_proxy_config(self) -> dict[str, Any]:
+        return self._search_proxy_config
+
+    @property
+    def search_proxy_state(self) -> dict[str, Any]:
+        return self._search_proxy_state
 
     def get_image_quality(self, entity_key: str) -> str:
         """Get image quality setting for an entity (user or group)."""
@@ -293,6 +327,90 @@ class ConfigManager:
                 pruned[user_key] = valid_entries
         self._random_usage_stats = pruned
 
+    @staticmethod
+    def _normalize_bypass_mode(value: Any) -> str:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in BYPASS_MODE_OPTIONS:
+                return normalized
+        return BYPASS_MODE_AUTO
+
+    @staticmethod
+    def _normalize_search_proxy_config(raw: Any) -> dict[str, Any]:
+        config = {
+            "enabled": False,
+            "proxy_url": "",
+            "daily_threshold": SEARCH_PROXY_DAILY_THRESHOLD,
+            "sticky_days": SEARCH_PROXY_STICKY_DAYS,
+        }
+        if not isinstance(raw, dict):
+            return config
+
+        enabled = raw.get("enabled")
+        if isinstance(enabled, bool):
+            config["enabled"] = enabled
+
+        proxy_url = raw.get("proxy_url")
+        if isinstance(proxy_url, str):
+            config["proxy_url"] = proxy_url.strip()
+
+        for key, default in (
+            ("daily_threshold", SEARCH_PROXY_DAILY_THRESHOLD),
+            ("sticky_days", SEARCH_PROXY_STICKY_DAYS),
+        ):
+            try:
+                config[key] = max(1, int(raw.get(key, default)))
+            except (TypeError, ValueError):
+                config[key] = default
+        return config
+
+    @classmethod
+    def _normalize_search_proxy_state(cls, raw: Any) -> dict[str, Any]:
+        state = {
+            "daily_rescue_counts": {},
+            "proxy_until": None,
+            "last_reason": "",
+        }
+        if not isinstance(raw, dict):
+            return state
+
+        state["daily_rescue_counts"] = cls._normalize_usage_daily_counts(
+            raw.get("daily_rescue_counts")
+        )
+        proxy_until = raw.get("proxy_until")
+        if isinstance(proxy_until, str) and proxy_until.strip():
+            try:
+                datetime.fromisoformat(proxy_until)
+            except ValueError:
+                pass
+            else:
+                state["proxy_until"] = proxy_until
+        last_reason = raw.get("last_reason")
+        if isinstance(last_reason, str):
+            state["last_reason"] = last_reason.strip()
+        return state
+
+    def _prune_search_proxy_state(self, *, window_days: int = 7) -> None:
+        keep_days = self._recent_day_strings(window_days)
+        counts = self._normalize_usage_daily_counts(
+            self._search_proxy_state.get("daily_rescue_counts")
+        )
+        self._search_proxy_state["daily_rescue_counts"] = {
+            day: count for day, count in counts.items() if day in keep_days
+        }
+
+        proxy_until = self._search_proxy_state.get("proxy_until")
+        if isinstance(proxy_until, str):
+            try:
+                expires_at = datetime.fromisoformat(proxy_until)
+            except ValueError:
+                self._search_proxy_state["proxy_until"] = None
+            else:
+                if expires_at <= datetime.now():
+                    self._search_proxy_state["proxy_until"] = None
+        elif proxy_until is not None:
+            self._search_proxy_state["proxy_until"] = None
+
     def _write_json_file(
         self,
         path: Path,
@@ -430,6 +548,9 @@ class ConfigManager:
         self._load_image_quality_config()
         self._load_random_usage_stats()
         self._load_custom_constants()
+        self._load_bypass_mode()
+        self._load_search_proxy_config()
+        self._load_search_proxy_state()
 
     def _load_tokens(self) -> None:
         raw = self._load_json_object(
@@ -867,6 +988,106 @@ class ConfigManager:
                 self._custom_constants,
                 log_label="custom constants",
             )
+
+    def _load_bypass_mode(self) -> None:
+        raw = self._load_json_object(
+            self._bypass_mode_file,
+            default={"mode": BYPASS_MODE_AUTO},
+            create_log_label="bypass mode config",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load bypass mode config, using auto."
+            ),
+        )
+        self._bypass_mode = self._normalize_bypass_mode(raw.get("mode"))
+
+    async def save_bypass_mode(self) -> None:
+        async with self._storage_lock:
+            self._write_json_file(
+                self._bypass_mode_file,
+                {"mode": self._bypass_mode},
+                log_label="bypass mode config",
+            )
+
+    def _load_search_proxy_config(self) -> None:
+        raw = self._load_json_object(
+            self._search_proxy_config_file,
+            default=self._normalize_search_proxy_config({}),
+            create_log_label="search proxy config",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load search proxy config, using defaults."
+            ),
+        )
+        self._search_proxy_config = self._normalize_search_proxy_config(raw)
+
+    async def save_search_proxy_config(self) -> None:
+        async with self._storage_lock:
+            self._write_json_file(
+                self._search_proxy_config_file,
+                self._normalize_search_proxy_config(self._search_proxy_config),
+                log_label="search proxy config",
+            )
+
+    def _load_search_proxy_state(self) -> None:
+        raw = self._load_json_object(
+            self._search_proxy_state_file,
+            default=self._normalize_search_proxy_state({}),
+            create_log_label="search proxy state",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load search proxy state, using defaults."
+            ),
+        )
+        self._search_proxy_state = self._normalize_search_proxy_state(raw)
+        self._prune_search_proxy_state()
+
+    async def save_search_proxy_state(self) -> None:
+        async with self._storage_lock:
+            self._prune_search_proxy_state()
+            self._write_json_file(
+                self._search_proxy_state_file,
+                self._search_proxy_state,
+                log_label="search proxy state",
+            )
+
+    def get_effective_bypass_mode(self) -> str:
+        if bool(self.get_constant("disable_bypass_sni", False)):
+            return "disabled"
+        return self._normalize_bypass_mode(self._bypass_mode)
+
+    def set_bypass_mode(self, mode: str) -> None:
+        self._bypass_mode = self._normalize_bypass_mode(mode)
+
+    def is_search_proxy_configured(self) -> bool:
+        return bool(self._search_proxy_config.get("enabled")) and bool(
+            str(self._search_proxy_config.get("proxy_url") or "").strip()
+        )
+
+    def get_search_proxy_url(self) -> str | None:
+        proxy_url = str(self._search_proxy_config.get("proxy_url") or "").strip()
+        return proxy_url or None
+
+    def is_search_proxy_active(self) -> bool:
+        proxy_until = self._search_proxy_state.get("proxy_until")
+        if not isinstance(proxy_until, str) or not proxy_until:
+            return False
+        try:
+            return datetime.fromisoformat(proxy_until) > datetime.now()
+        except ValueError:
+            return False
+
+    async def record_search_proxy_rescue(self, *, reason: str) -> None:
+        self._prune_search_proxy_state()
+        today = datetime.now().date().isoformat()
+        counts = self._search_proxy_state.setdefault("daily_rescue_counts", {})
+        counts[today] = int(counts.get(today, 0)) + 1
+        self._search_proxy_state["last_reason"] = reason.strip()[:200]
+
+        threshold = max(1, int(self._search_proxy_config.get("daily_threshold", 3)))
+        sticky_days = max(1, int(self._search_proxy_config.get("sticky_days", 3)))
+        if counts[today] >= threshold:
+            self._search_proxy_state["proxy_until"] = (
+                datetime.now() + timedelta(days=sticky_days)
+            ).isoformat()
+        await self.save_search_proxy_state()
 
     def get_constant(self, key: str, default: Any = None) -> Any:
         """Get a constant value, checking custom constants first, then defaults."""

@@ -10,6 +10,8 @@ from astrbot.api.event import AstrMessageEvent
 from .cache_manager import CacheManager
 from .config_manager import ConfigManager
 from .constants import (
+    BYPASS_MODE_AUTO,
+    BYPASS_MODE_OPTIONS,
     CONFIGURABLE_CONSTANT_ALIASES,
     CONFIGURABLE_CONSTANT_NAMES,
     CONFIGURABLE_CONSTANTS,
@@ -263,6 +265,35 @@ class CommandHandler:
         if group_id and self._config.is_r18_mosaic_enabled_in_group(str(group_id)):
             return "hajimi"
         return "off"
+
+    @staticmethod
+    def _mask_proxy_url(proxy_url: str) -> str:
+        if "://" not in proxy_url:
+            return "***"
+        scheme, remainder = proxy_url.split("://", 1)
+        if "@" in remainder:
+            _, host_part = remainder.rsplit("@", 1)
+            return f"{scheme}://***@{host_part}"
+        return f"{scheme}://{remainder}"
+
+    @staticmethod
+    def _bypass_mode_label(mode: str) -> str:
+        return {
+            "disabled": "普通域名模式",
+            "auto": "自动混合模式",
+            "pixez": "PixEz 模式",
+            "accesser": "Accesser 模式",
+        }.get(mode, mode)
+
+    @classmethod
+    def _bypass_mode_summary(cls, mode: str) -> str:
+        summaries = {
+            "auto": "先走 PixEz 式直连，再回退到 Accesser 式域名覆盖。",
+            "pixez": "只走缓存 IP + 禁用 SNI 的 PixEz 式直连。",
+            "accesser": "只走 Accesser 式域名解析覆盖，不走直连 IP。",
+            "disabled": "完全关闭绕过，直接走普通域名请求。",
+        }
+        return summaries.get(mode, mode)
 
     @staticmethod
     def _build_cache_item(
@@ -1319,9 +1350,8 @@ class CommandHandler:
 
         # Handle DNS config
         if len(args) >= 2 and args[1].lower() == "dns":
-            bypass_enabled = not bool(
-                self._config.get_constant("disable_bypass_sni", DISABLE_BYPASS_SNI)
-            )
+            effective_bypass_mode = self._config.get_effective_bypass_mode()
+            bypass_enabled = effective_bypass_mode != "disabled"
             if len(args) >= 3 and args[2].lower() == "refresh":
                 if not event.is_admin():
                     yield event.plain_result("❌ 仅 AstrBot 管理员可手动刷新 DNS。")
@@ -1330,6 +1360,11 @@ class CommandHandler:
                     yield event.plain_result(
                         "ℹ️ 当前已禁用 SNI 绕过，插件会直接走域名请求，不会执行 DoH 刷新。\n"
                         "如需恢复 PixEz 风格直连，请使用 /pixiv config set disable_bypass_sni false"
+                    )
+                    return
+                if effective_bypass_mode == "accesser":
+                    yield event.plain_result(
+                        "ℹ️ 当前为 Accesser 模式，请求仍可使用运行时域名覆盖，但不会刷新 PixEz IP 缓存。"
                     )
                     return
                 if self._dns_refresh_func:
@@ -1346,11 +1381,14 @@ class CommandHandler:
                         next_refresh = self._dns_time_getter()
                     except Exception:
                         pass
-                network_mode = (
-                    "PixEz 优先模式（启动/凌晨4点 DoH 刷新 + 缓存 IP + 禁用 SNI）"
-                    if bypass_enabled
-                    else "普通域名模式（已禁用 SNI 绕过）"
-                )
+                if effective_bypass_mode == "disabled":
+                    network_mode = "普通域名模式（已禁用 SNI 绕过）"
+                elif effective_bypass_mode == "pixez":
+                    network_mode = "PixEz 模式（缓存 IP + 禁用 SNI）"
+                elif effective_bypass_mode == "accesser":
+                    network_mode = "Accesser 模式（域名覆盖解析）"
+                else:
+                    network_mode = "自动混合模式（PixEz 直连优先，Accesser 回退）"
                 yield event.plain_result(
                     f"ℹ️ DNS 刷新状态：\n"
                     f"- 当前网络模式: {network_mode}\n"
@@ -2342,6 +2380,137 @@ class CommandHandler:
                         pass
         return options
 
+    async def handle_bypass(self, event: AstrMessageEvent, args: list[str]):
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅 AstrBot 管理员可查看或修改绕过模式。")
+            return
+
+        legacy_disabled = bool(
+            self._config.get_constant("disable_bypass_sni", DISABLE_BYPASS_SNI)
+        )
+        stored_mode = self._config.bypass_mode
+        effective_mode = self._config.get_effective_bypass_mode()
+
+        if len(args) >= 3 and args[1].lower() == "mode":
+            new_mode = str(args[2]).strip().lower()
+            if new_mode not in BYPASS_MODE_OPTIONS:
+                yield event.plain_result(
+                    "❌ 无效模式，请使用 auto / pixez / accesser。"
+                )
+                return
+            self._config.set_bypass_mode(new_mode)
+            await self._config.save_bypass_mode()
+            yield event.plain_result(
+                f"✅ 已设置 bypass mode = {new_mode}\n"
+                f"当前说明：{self._bypass_mode_summary(new_mode)}"
+            )
+            return
+
+        yield event.plain_result(
+            "ℹ️ 绕过模式状态：\n"
+            f"- legacy disable_bypass_sni: {legacy_disabled}\n"
+            f"- 已保存模式: {self._bypass_mode_label(stored_mode)} ({stored_mode})\n"
+            f"- 当前生效模式: {self._bypass_mode_label(effective_mode)} ({effective_mode})\n"
+            f"- auto: {self._bypass_mode_summary(BYPASS_MODE_AUTO)}\n"
+            f"- pixez: {self._bypass_mode_summary('pixez')}\n"
+            f"- accesser: {self._bypass_mode_summary('accesser')}"
+        )
+
+    async def handle_proxy(self, event: AstrMessageEvent, args: list[str]):
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅 AstrBot 管理员可查看或修改搜索代理配置。")
+            return
+
+        subcommand = args[1].lower() if len(args) >= 2 else "status"
+        config = self._config.search_proxy_config
+        state = self._config.search_proxy_state
+
+        if subcommand == "status":
+            proxy_url = str(config.get("proxy_url") or "").strip()
+            masked_proxy = self._mask_proxy_url(proxy_url) if proxy_url else "未配置"
+            yield event.plain_result(
+                "ℹ️ 搜索代理状态：\n"
+                f"- 启用: {bool(config.get('enabled'))}\n"
+                f"- 代理地址: {masked_proxy}\n"
+                f"- 今日触发次数: {int(state.get('daily_rescue_counts', {}).get(time.strftime('%Y-%m-%d'), 0))}\n"
+                f"- 粘滞代理截止: {state.get('proxy_until') or '未激活'}\n"
+                f"- 每日阈值: {config.get('daily_threshold')}\n"
+                f"- 粘滞天数: {config.get('sticky_days')}\n"
+                f"- 最近原因: {state.get('last_reason') or '无'}"
+            )
+            return
+
+        if subcommand == "set":
+            if len(args) < 3:
+                yield event.plain_result("❌ 用法：/pixiv proxy set <proxy_url>")
+                return
+            config["proxy_url"] = args[2].strip()
+            await self._config.save_search_proxy_config()
+            yield event.plain_result("✅ 已保存搜索代理地址。")
+            return
+
+        if subcommand == "clear":
+            config["proxy_url"] = ""
+            state["proxy_until"] = None
+            state["last_reason"] = ""
+            await self._config.save_search_proxy_config()
+            await self._config.save_search_proxy_state()
+            yield event.plain_result("✅ 已清除搜索代理地址并关闭当前粘滞代理窗口。")
+            return
+
+        if subcommand == "enable":
+            if len(args) < 3:
+                yield event.plain_result("❌ 用法：/pixiv proxy enable true|false")
+                return
+            enabled = self._parse_bool_value(args[2])
+            if enabled is None:
+                yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
+                return
+            config["enabled"] = enabled
+            await self._config.save_search_proxy_config()
+            yield event.plain_result(
+                f"✅ 已将搜索代理设置为 {'开启' if enabled else '关闭'}。"
+            )
+            return
+
+        if subcommand == "threshold":
+            if len(args) < 3:
+                yield event.plain_result("❌ 用法：/pixiv proxy threshold <count>")
+                return
+            try:
+                count = max(1, int(args[2]))
+            except ValueError:
+                yield event.plain_result("❌ 阈值必须是大于等于 1 的整数。")
+                return
+            config["daily_threshold"] = count
+            await self._config.save_search_proxy_config()
+            yield event.plain_result(f"✅ 已设置每日触发阈值为 {count}。")
+            return
+
+        if subcommand == "sticky":
+            if len(args) < 3:
+                yield event.plain_result("❌ 用法：/pixiv proxy sticky <days>")
+                return
+            try:
+                days = max(1, int(args[2]))
+            except ValueError:
+                yield event.plain_result("❌ 粘滞天数必须是大于等于 1 的整数。")
+                return
+            config["sticky_days"] = days
+            await self._config.save_search_proxy_config()
+            yield event.plain_result(f"✅ 已设置粘滞代理天数为 {days}。")
+            return
+
+        yield event.plain_result(
+            "📋 用法：\n"
+            "- /pixiv proxy status\n"
+            "- /pixiv proxy set <proxy_url>\n"
+            "- /pixiv proxy clear\n"
+            "- /pixiv proxy enable true|false\n"
+            "- /pixiv proxy threshold <count>\n"
+            "- /pixiv proxy sticky <days>"
+        )
+
     async def handle_search(self, event: AstrMessageEvent, args: list[str]):
         """Handle search command for illustrations."""
         if len(args) < 2:
@@ -2410,7 +2579,7 @@ class CommandHandler:
             return
 
         illusts = data.get("illusts") if isinstance(data.get("illusts"), list) else []
-        total_count = None  # Pixiv API doesn't return total count in search
+        total_count = data.get("total") if isinstance(data.get("total"), int) else None
 
         # Limit results
         illusts = illusts[:limit]
@@ -2563,7 +2732,7 @@ class CommandHandler:
             if isinstance(data.get("user_previews"), list)
             else []
         )
-        total_count = None  # Pixiv API doesn't return total count in search
+        total_count = data.get("total") if isinstance(data.get("total"), int) else None
 
         # Limit results
         user_previews = user_previews[:limit]

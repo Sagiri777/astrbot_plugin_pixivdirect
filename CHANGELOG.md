@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.11.0] - 2026-03-31
+
+### Added
+- 新增 `/pixiv bypass` 管理命令，可在 `auto`、`pixez`、`accesser` 三种绕过模式之间切换
+- 新增搜索代理配置与状态文件，支持 `/pixiv proxy status/set/clear/enable/threshold/sticky`
+
+### Changed
+- 搜索命令现在会在 App API 失败后继续尝试 Pixiv Web Ajax 搜索兜底
+- 当同一天内多次触发搜索代理兜底后，插件会自动进入 3 天粘滞代理窗口，后续搜索优先走代理
+- `disable_bypass_sni` 继续保留为全局关闭开关，同时新增独立的 bypass mode 选择
+
 ## [1.10.11] - 2026-03-31
 
 ### Fixed

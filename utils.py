@@ -400,6 +400,21 @@ HELP_MENU: list[dict[str, Any]] = [
                 "description": "查看或修改插件运行配置项",
                 "usage_key": "config",
             },
+            {
+                "command": "/pixiv bypass",
+                "description": "查看当前绕过模式与 legacy 开关状态",
+                "usage_key": "bypass",
+            },
+            {
+                "command": "/pixiv bypass mode auto|pixez|accesser",
+                "description": "切换 PixEz / Accesser / 自动混合模式",
+                "usage_key": "bypass",
+            },
+            {
+                "command": "/pixiv proxy status/set/clear/enable/threshold/sticky",
+                "description": "管理搜索失败后的代理兜底与粘滞代理窗口",
+                "usage_key": "proxy",
+            },
         ],
     },
 ]
@@ -413,7 +428,7 @@ def help_text() -> str:
         for item in section["items"]:
             lines.append(f"- {item['command']}  # {item['description']}")
     lines.append(
-        "\n💡 顶级别名：/pixiv share、/pixiv quality、/pixiv cache、/pixiv dns、/pixiv config、/pixiv groupblock"
+        "\n💡 顶级别名：/pixiv share、/pixiv quality、/pixiv cache、/pixiv dns、/pixiv config、/pixiv bypass、/pixiv proxy、/pixiv groupblock"
     )
     return "\n".join(lines)
 
@@ -468,6 +483,18 @@ def command_usage(command: str) -> str | None:
         lines.append("- /pixiv config get <key>  # 查看单个配置")
         lines.append("- /pixiv config set <key> <value>  # 修改配置")
         lines.append("- /pixiv config reset [key]  # 重置配置")
+    elif command == "bypass":
+        lines.append("- /pixiv bypass  # 查看当前绕过模式")
+        lines.append("- /pixiv bypass mode auto  # 使用自动混合模式")
+        lines.append("- /pixiv bypass mode pixez  # 只走 PixEz 式直连")
+        lines.append("- /pixiv bypass mode accesser  # 只走 Accesser 式域名覆盖")
+    elif command == "proxy":
+        lines.append("- /pixiv proxy status  # 查看搜索代理状态")
+        lines.append("- /pixiv proxy set <proxy_url>  # 设置搜索代理地址")
+        lines.append("- /pixiv proxy clear  # 清空搜索代理地址")
+        lines.append("- /pixiv proxy enable true/false  # 启用或禁用搜索代理")
+        lines.append("- /pixiv proxy threshold <count>  # 设置每日触发阈值")
+        lines.append("- /pixiv proxy sticky <days>  # 设置粘滞代理天数")
     elif command == "r18":
         lines.append("- /pixiv r18 true/false  # 群聊中控制是否发送 R-18 图片")
         lines.append("- /pixiv r18 tag true/false  # 群聊中控制是否显示标签")

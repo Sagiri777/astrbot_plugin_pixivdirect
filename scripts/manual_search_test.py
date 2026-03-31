@@ -102,6 +102,8 @@ async def _plugin_like_search_call(
     params: dict[str, Any],
     refresh_token: str,
     dns_cache_file: Path,
+    bypass_mode: str = "auto",
+    proxy: str | None = None,
 ) -> dict[str, Any]:
     call_kwargs = {
         "dns_cache_file": str(dns_cache_file),
@@ -109,6 +111,9 @@ async def _plugin_like_search_call(
         "runtime_dns_resolve": False,
         "max_retries": 2,
         "refresh_token": refresh_token,
+        "bypass_mode": bypass_mode,
+        "bypass_sni": proxy is None,
+        "proxy": proxy,
     }
     result = await asyncio.to_thread(pixiv, action, params, **call_kwargs)
 
@@ -125,9 +130,43 @@ async def _plugin_like_search_call(
         retry_kwargs = {
             **call_kwargs,
             "dns_update_hosts": True,
-            "runtime_dns_resolve": True,
+            "runtime_dns_resolve": proxy is None,
         }
         result = await asyncio.to_thread(pixiv, action, params, **retry_kwargs)
+
+    if not result.get("ok"):
+        web_action = (
+            "web_search_illust" if action == "search_illust" else "web_search_user"
+        )
+        web_params = dict(params)
+        if "offset" in web_params:
+            web_params["page"] = int(web_params["offset"]) // 30 + 1
+        web_result = await asyncio.to_thread(
+            pixiv,
+            web_action,
+            web_params,
+            **call_kwargs,
+        )
+        if web_result.get("ok"):
+            print(f"[manual-test] {action} recovered via {web_action}")
+            return web_result
+        if proxy:
+            print(
+                f"[manual-test] {action} already used proxy; web fallback also failed"
+            )
+            return web_result
+        proxy_url = os.environ.get("PIXIV_SEARCH_PROXY", "")
+        if proxy_url:
+            print(f"[manual-test] retrying {action} through proxy fallback")
+            return await _plugin_like_search_call(
+                action=action,
+                params=params,
+                refresh_token=refresh_token,
+                dns_cache_file=dns_cache_file,
+                bypass_mode=bypass_mode,
+                proxy=proxy_url,
+            )
+        return web_result
     return result
 
 
@@ -147,6 +186,7 @@ async def _plugin_like_search_user_call(
         params=params,
         refresh_token=refresh_token,
         dns_cache_file=dns_cache_file,
+        bypass_mode="auto",
     )
     data = result.get("data")
     if isinstance(data, dict) and isinstance(data.get("user_previews"), list):
@@ -226,6 +266,12 @@ async def _main() -> int:
         default=str(Path.cwd() / ".manual_pixiv_host_map.json"),
         help="Path for temporary DNS host-map cache.",
     )
+    parser.add_argument(
+        "--bypass-mode",
+        default="auto",
+        choices=["auto", "pixez", "accesser"],
+        help="Bypass mode to use for App API requests.",
+    )
     args = parser.parse_args()
 
     if not args.refresh_token:
@@ -246,6 +292,7 @@ async def _main() -> int:
         params=search_params,
         refresh_token=args.refresh_token,
         dns_cache_file=Path(args.dns_cache_file),
+        bypass_mode=args.bypass_mode,
     )
 
     print(
