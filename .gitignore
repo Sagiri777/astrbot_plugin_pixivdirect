@@ -210,3 +210,4 @@ Accesser/
 pixez-flutter/
 
 .DS_Store
+scripts/getForToken.py
