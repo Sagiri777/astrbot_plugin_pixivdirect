@@ -50,6 +50,7 @@ OAUTH_URL = "https://oauth.secure.pixiv.net/auth/token"
 PIXIV_UA = "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"
 IMAGE_UA = "PixivIOSApp/5.8.0"
 IMAGE_REFERER = "https://app-api.pixiv.net/"
+PIXIV_APP_FILTER = "for_android"
 
 # Process-level caches for runtime DNS resolve.
 _RUN_RESOLVED_IPS: dict[str, list[str]] = {}
@@ -1196,7 +1197,15 @@ def pixiv(
         raise ValueError(f"Unknown action: {action}. Use mapped action or /v1/... path")
 
     api_url = f"{API_BASE}{path}"
-    res = send("GET", api_url, req_params=params, with_auth=True)
+
+    api_params = dict(params)
+    if action == "search_illust":
+        api_params.setdefault("filter", PIXIV_APP_FILTER)
+        api_params.setdefault("merge_plain_keyword_results", True)
+    elif action == "search_user":
+        api_params.setdefault("filter", PIXIV_APP_FILTER)
+
+    res = send("GET", api_url, req_params=api_params, with_auth=True)
 
     try:
         data = res.json()
