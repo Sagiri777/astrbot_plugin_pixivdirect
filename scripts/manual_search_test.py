@@ -131,6 +131,29 @@ async def _plugin_like_search_call(
     return result
 
 
+async def _plugin_like_search_user_call(
+    *,
+    keyword: str,
+    page: int,
+    limit: int,
+    refresh_token: str,
+    dns_cache_file: Path,
+) -> dict[str, Any]:
+    params: dict[str, Any] = {"word": keyword}
+    if page > 1:
+        params["offset"] = (page - 1) * 30
+    result = await _plugin_like_search_call(
+        action="search_user",
+        params=params,
+        refresh_token=refresh_token,
+        dns_cache_file=dns_cache_file,
+    )
+    data = result.get("data")
+    if isinstance(data, dict) and isinstance(data.get("user_previews"), list):
+        data["user_previews"] = data["user_previews"][:limit]
+    return result
+
+
 def _build_search_params(
     keyword: str, options: dict[str, Any]
 ) -> tuple[dict[str, Any], int, int]:
@@ -165,6 +188,21 @@ def _print_search_summary(
         print(
             f"{index}. {title} | illust_id={illust_id} | author={user_name} ({user_id})"
         )
+
+
+def _print_search_user_summary(
+    user_previews: list[dict[str, Any]], keyword: str, page: int
+) -> None:
+    print(f"🔎 作者搜索结果：关键词「{keyword}」（第{page}页）")
+    for index, preview in enumerate(user_previews, 1):
+        user = preview.get("user") if isinstance(preview.get("user"), dict) else {}
+        user_name = user.get("name", "未知")
+        user_id = user.get("id", "未知")
+        account = user.get("account", "")
+        summary = f"{index}. {user_name} | user_id={user_id}"
+        if account:
+            summary += f" | account={account}"
+        print(summary)
 
 
 async def _main() -> int:
@@ -233,7 +271,34 @@ async def _main() -> int:
     if illusts:
         _print_search_summary(illusts, keyword, page)
     else:
-        print("[manual-test] no illustrations returned")
+        print("[manual-test] no illustrations returned; falling back to search_user")
+        user_result = await _plugin_like_search_user_call(
+            keyword=keyword,
+            page=page,
+            limit=limit,
+            refresh_token=args.refresh_token,
+            dns_cache_file=Path(args.dns_cache_file),
+        )
+        print(
+            "[manual-test] fallback result: "
+            f"ok={user_result.get('ok')} status={user_result.get('status')} "
+            f"action={user_result.get('action')}"
+        )
+        if not user_result.get("ok"):
+            print(f"[manual-test] fallback data={user_result.get('data')}")
+            return 1
+        user_data = user_result.get("data")
+        user_previews = (
+            user_data.get("user_previews")
+            if isinstance(user_data, dict)
+            and isinstance(user_data.get("user_previews"), list)
+            else []
+        )
+        print(f"[manual-test] fallback user_count={len(user_previews)}")
+        if user_previews:
+            _print_search_user_summary(user_previews, keyword, page)
+        else:
+            print("[manual-test] no authors returned")
     return 0
 
 

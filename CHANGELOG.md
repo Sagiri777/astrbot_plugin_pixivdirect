@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.7] - 2026-03-31
+
+### Changed
+- `/pixiv search` 在作品搜索结果为空时，现在会自动回退到 `search_user`，返回匹配到的作者列表
+- 仅当作品搜索没有命中时才触发作者兜底，避免影响已有作品搜索结果展示
+
 ## [1.10.6] - 2026-03-31
 
 ### Fixed

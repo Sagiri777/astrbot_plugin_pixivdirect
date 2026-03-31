@@ -158,6 +158,41 @@ class CommandHandler:
     def _get_search_max_limit(self) -> int:
         return int(self._config.get_constant("search_max_limit", SEARCH_MAX_LIMIT))
 
+    async def _search_user_previews(
+        self,
+        *,
+        keyword: str,
+        page: int,
+        limit: int,
+        user_token: str,
+        sort: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str]:
+        search_params: dict[str, Any] = {"word": keyword}
+        if sort:
+            search_params["sort"] = sort
+        if page > 1:
+            search_params["offset"] = (page - 1) * 30
+
+        result = await self._pixiv_call(
+            "search_user",
+            search_params,
+            refresh_token=user_token,
+        )
+        if not result.get("ok"):
+            raise RuntimeError(self._image.format_pixiv_error(result))
+
+        latest_refresh_token = str(result.get("refresh_token") or user_token)
+        data = result.get("data")
+        if not isinstance(data, dict):
+            raise RuntimeError("❌ 解析搜索结果失败。")
+
+        user_previews = (
+            data.get("user_previews")
+            if isinstance(data.get("user_previews"), list)
+            else []
+        )
+        return user_previews[:limit], latest_refresh_token
+
     async def _record_random_usage(
         self, *, owner_user_key: str, filter_params: dict[str, Any]
     ) -> None:
@@ -2351,6 +2386,34 @@ class CommandHandler:
         illusts = illusts[:limit]
 
         if not illusts:
+            try:
+                user_previews, fallback_refresh_token = await self._search_user_previews(
+                    keyword=keyword,
+                    page=page,
+                    limit=limit,
+                    user_token=latest_refresh_token,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[pixivdirect] Search fallback to search_user failed for keyword=%s: %s",
+                    keyword,
+                    exc,
+                )
+                user_previews = []
+            else:
+                if fallback_refresh_token != latest_refresh_token:
+                    latest_refresh_token = fallback_refresh_token
+                    if latest_refresh_token != user_token:
+                        await self.set_user_token(event, latest_refresh_token)
+
+            if user_previews:
+                caption = format_search_user_result(user_previews, keyword, page)
+                yield event.plain_result(
+                    f"🔍 搜索结果：关键词「{keyword}」没有找到相关作品。"
+                    f"\n\n已自动切换为作者搜索：\n\n{caption}"
+                )
+                return
+
             await self._emoji.add_emoji_reaction(event, "error")
             yield event.plain_result(
                 f"🔍 搜索结果：关键词「{keyword}」没有找到相关作品。"
