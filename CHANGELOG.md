@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.4] - 2026-03-31
+
+### Changed
+- 为图片下载、写入缓存、缓存命中、发送前判定、额外图片发送和动图渲染补充更细粒度日志，便于定位图片链路卡在哪个阶段
+
 ## [1.10.3] - 2026-03-31
 
 ### Fixed

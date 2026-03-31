@@ -71,6 +71,13 @@ class ImageHandler:
         fallback_name: str,
         binary_label: str,
     ) -> str:
+        logger.info(
+            "[pixivdirect] Requesting %s via action=%s, url=%s, prefix=%s",
+            binary_label,
+            action,
+            resource_url,
+            name_prefix,
+        )
         result = await self._pixiv_call(
             action,
             {"url": resource_url},
@@ -78,6 +85,13 @@ class ImageHandler:
             refresh_token=refresh_token,
         )
         if not result.get("ok"):
+            logger.warning(
+                "[pixivdirect] %s request failed, action=%s, status=%s, url=%s",
+                binary_label,
+                action,
+                result.get("status"),
+                resource_url,
+            )
             raise RuntimeError(self.format_pixiv_error(result))
 
         content = result.get("content")
@@ -89,6 +103,12 @@ class ImageHandler:
             self._cache_dir / f"{name_prefix}_{int(time.time() * 1000)}_{safe_name}"
         )
         target.write_bytes(bytes(content))
+        logger.info(
+            "[pixivdirect] Saved %s to %s (%d bytes)",
+            binary_label,
+            target,
+            len(content),
+        )
         return str(target)
 
     @staticmethod
@@ -156,13 +176,21 @@ class ImageHandler:
         output_path: str,
     ) -> None:
         """Render ugoira zip to GIF, fallback to ffmpeg if PIL fails."""
+        logger.info(
+            "[pixivdirect] Rendering ugoira zip=%s to gif=%s with %d frames",
+            zip_path,
+            output_path,
+            len(frames),
+        )
         try:
             self._render_ugoira_with_pil(zip_path, frames, output_path)
+            logger.info("[pixivdirect] Ugoira rendered with PIL: %s", output_path)
         except Exception as pil_exc:
             logger.warning(
                 "[pixivdirect] PIL GIF render failed: %s, trying ffmpeg", pil_exc
             )
             self._render_ugoira_with_ffmpeg(zip_path, frames, output_path)
+            logger.info("[pixivdirect] Ugoira rendered with ffmpeg: %s", output_path)
 
     def _render_ugoira_with_pil(
         self,
@@ -174,6 +202,11 @@ class ImageHandler:
         with zipfile.ZipFile(zip_path, "r") as zip_file:
             frame_delays = self._collect_frame_delays(frames)
             image_files = self._list_archive_image_files(zip_file)
+            logger.info(
+                "[pixivdirect] PIL ugoira render reading %d image files from %s",
+                len(image_files),
+                zip_path,
+            )
 
             if not image_files:
                 raise RuntimeError("动图 zip 文件中没有找到图像文件。")
@@ -210,6 +243,11 @@ class ImageHandler:
         """Render ugoira zip to GIF using ffmpeg."""
         if not shutil.which("ffmpeg"):
             raise RuntimeError("ffmpeg 未安装，无法渲染动图。")
+        logger.info(
+            "[pixivdirect] Falling back to ffmpeg for ugoira render: %s -> %s",
+            zip_path,
+            output_path,
+        )
 
         frame_delays = self._collect_frame_delays(frames)
 

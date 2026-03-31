@@ -123,6 +123,33 @@ class CommandHandler:
             ),
         )
 
+    @staticmethod
+    def _event_log_context(event: AstrMessageEvent) -> str:
+        platform = event.get_platform_name()
+        sender_id = user_key(event)
+        group_id = event.get_group_id()
+        if group_id:
+            return f"platform={platform}, group={group_id}, user={sender_id}"
+        return f"platform={platform}, private_user={sender_id}"
+
+    def _log_send_request(
+        self,
+        event: AstrMessageEvent,
+        *,
+        stage: str,
+        image_path: str | None = None,
+        extra: str | None = None,
+    ) -> None:
+        suffix = f", image={image_path}" if image_path else ""
+        extra_suffix = f", {extra}" if extra else ""
+        logger.info(
+            "[pixivdirect] %s send request (%s%s%s)",
+            stage,
+            self._event_log_context(event),
+            suffix,
+            extra_suffix,
+        )
+
     def _get_search_default_limit(self) -> int:
         return int(
             self._config.get_constant("search_default_limit", SEARCH_DEFAULT_LIMIT)
@@ -230,6 +257,13 @@ class CommandHandler:
         user_cache = self._config.random_cache.setdefault(user_id, {})
         queue = user_cache.setdefault(DEFAULT_POOL_KEY, [])
         queue.append(item)
+        logger.info(
+            "[pixivdirect] Cached image item for user=%s, illust_id=%s, path=%s, queue_size=%d",
+            user_id,
+            item.get("illust_id"),
+            item.get("path"),
+            len(queue),
+        )
         await self._config.save_cache_index()
 
     @staticmethod
@@ -273,6 +307,12 @@ class CommandHandler:
 
         path = item.get("path")
         if path and self.should_send_image(event, item):
+            self._log_send_request(
+                event,
+                stage="random-primary",
+                image_path=str(path),
+                extra=f"source={source_label}",
+            )
             for result in await self._build_text_image_results(
                 event,
                 message,
@@ -285,6 +325,12 @@ class CommandHandler:
                 for extra_path in extra_image_paths:
                     if not isinstance(extra_path, str) or not extra_path:
                         continue
+                    self._log_send_request(
+                        event,
+                        stage="random-extra",
+                        image_path=extra_path,
+                        extra=f"source={source_label}",
+                    )
                     for result in await self._build_image_results(
                         event,
                         extra_path,
@@ -296,6 +342,11 @@ class CommandHandler:
         plain_message = self._format_caption_for_event(event, message, item)
         if self._cache.is_r18_item(item):
             plain_message += "\n⚠️ R-18 内容在群聊中仅显示信息"
+        logger.info(
+            "[pixivdirect] Sending text-only random result (%s, reason=no-image-or-blocked, source=%s)",
+            self._event_log_context(event),
+            source_label,
+        )
         yield event.plain_result(plain_message)
 
     async def _pop_random_cached_item(
@@ -362,6 +413,12 @@ class CommandHandler:
                     page_count=illust.get("page_count", 1),
                 ),
             )
+            logger.info(
+                "[pixivdirect] Cached illust result for target=%s (%s, path=%s)",
+                log_target,
+                self._event_log_context(event),
+                path,
+            )
         except Exception as exc:
             logger.warning(
                 "[pixivdirect] Failed to cache illust %s: %s",
@@ -389,6 +446,12 @@ class CommandHandler:
             yield result_item
 
         for extra_path in extra_paths:
+            self._log_send_request(
+                event,
+                stage="extra-image",
+                image_path=extra_path,
+                extra=f"apply_event_restrictions={apply_event_restrictions}",
+            )
             for result_item in await self._build_image_results(
                 event,
                 extra_path,
@@ -634,8 +697,19 @@ class CommandHandler:
             apply_event_restrictions=apply_event_restrictions,
         )
         if not prepared_path:
+            logger.info(
+                "[pixivdirect] Sending text-only result (%s, apply_event_restrictions=%s)",
+                self._event_log_context(event),
+                apply_event_restrictions,
+            )
             return [event.plain_result(formatted_text)]
 
+        self._log_send_request(
+            event,
+            stage="text-image",
+            image_path=prepared_path,
+            extra=f"apply_event_restrictions={apply_event_restrictions}",
+        )
         if event.get_platform_name() == "aiocqhttp":
             return [
                 event.plain_result(formatted_text),
@@ -659,8 +733,18 @@ class CommandHandler:
             apply_event_restrictions=apply_event_restrictions,
         )
         if not prepared_path:
+            logger.info(
+                "[pixivdirect] Skipping image-only send because no prepared path (%s)",
+                self._event_log_context(event),
+            )
             return []
 
+        self._log_send_request(
+            event,
+            stage="image-only",
+            image_path=prepared_path,
+            extra=f"apply_event_restrictions={apply_event_restrictions}",
+        )
         if event.get_platform_name() == "aiocqhttp":
             return [event.image_result(prepared_path)]
         return [event.make_result().file_image(prepared_path)]
@@ -734,11 +818,22 @@ class CommandHandler:
                     if isinstance(item_tag, str):
                         for blocked_tag in blocked_tags:
                             if item_tag.lower() == blocked_tag.lower():
+                                logger.info(
+                                    "[pixivdirect] Blocking image send due to blocked tag=%s (%s, illust_id=%s)",
+                                    blocked_tag,
+                                    self._event_log_context(event),
+                                    item.get("illust_id"),
+                                )
                                 return False
 
         if self._config.is_r18_enabled_in_group(group_id):
             return True
         if self._cache.is_r18_item(item):
+            logger.info(
+                "[pixivdirect] Blocking image send due to group R-18 policy (%s, illust_id=%s)",
+                self._event_log_context(event),
+                item.get("illust_id"),
+            )
             return False
         return True
 
@@ -804,6 +899,11 @@ class CommandHandler:
             # Check cache first
             cached_item = self._cache.find_cached_by_illust_id(int(target_id))
             if cached_item:
+                logger.info(
+                    "[pixivdirect] Illust detail cache hit for illust_id=%s (%s)",
+                    target_id,
+                    self._event_log_context(event),
+                )
                 await self._emoji.add_emoji_reaction(event, "query_illust")
                 caption = cached_item.get("caption") or "Pixiv 作品详情（缓存）"
                 path = cached_item.get("path")
@@ -821,6 +921,11 @@ class CommandHandler:
                 return
 
             await self._emoji.add_emoji_reaction(event, "query_illust")
+            logger.info(
+                "[pixivdirect] Fetching illust detail for illust_id=%s (%s)",
+                target_id,
+                self._event_log_context(event),
+            )
             result = await self._pixiv_call(
                 "illust_detail",
                 {"illust_id": int(target_id)},
@@ -956,6 +1061,14 @@ class CommandHandler:
 
             if all_image_urls:
                 try:
+                    logger.info(
+                        "[pixivdirect] Illust %s resolved %d image urls (page_count=%s, threshold=%d, quality=%s)",
+                        target_id,
+                        len(all_image_urls),
+                        page_count,
+                        multi_image_threshold,
+                        quality,
+                    )
                     if page_count <= multi_image_threshold:
                         # Download and send all images directly
                         downloaded_paths: list[str] = []
@@ -976,6 +1089,11 @@ class CommandHandler:
                                 )
 
                         if downloaded_paths:
+                            logger.info(
+                                "[pixivdirect] Sending %d downloaded images directly for illust_id=%s",
+                                len(downloaded_paths),
+                                target_id,
+                            )
                             async for (
                                 result_item
                             ) in self._emit_primary_and_extra_images(
@@ -1028,6 +1146,11 @@ class CommandHandler:
                                 )
 
                         if local_paths:
+                            logger.info(
+                                "[pixivdirect] Sending illust_id=%s with forward message for %d extra images",
+                                target_id,
+                                max(0, len(local_paths) - 1),
+                            )
                             # Send first image with caption, then forward the rest
                             for result_item in await self._build_text_image_results(
                                 event,
@@ -1060,6 +1183,11 @@ class CommandHandler:
                                     nodes.append(node)
 
                                 if nodes:
+                                    logger.info(
+                                        "[pixivdirect] Emitting forward image node chain for illust_id=%s (%d nodes)",
+                                        target_id,
+                                        len(nodes),
+                                    )
                                     forward_msg = Nodes(nodes=nodes)
                                     yield event.make_result().chain([forward_msg])
 
@@ -2026,6 +2154,11 @@ class CommandHandler:
             )
             selected_urls = image_urls[:multi_image_threshold] if image_urls else []
             primary_url = selected_urls[0] if selected_urls else str(item["image_url"])
+            logger.info(
+                "[pixivdirect] Building random cache item for illust_id=%s with %d selected image urls",
+                item.get("illust_id"),
+                len(selected_urls) if selected_urls else 1,
+            )
 
             async with semaphore:
                 local_path = await self._image.download_image_to_cache(
@@ -2238,6 +2371,11 @@ class CommandHandler:
                     first_illust, self._get_quality_for_event(event)
                 )
                 if image_url:
+                    logger.info(
+                        "[pixivdirect] Downloading search preview for keyword=%s, illust_id=%s",
+                        keyword,
+                        first_illust_id,
+                    )
                     local_path = await self._image.download_image_to_cache(
                         image_url,
                         access_token=result.get("access_token"),
