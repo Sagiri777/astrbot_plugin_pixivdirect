@@ -212,3 +212,4 @@ pixez-flutter/
 .DS_Store
 scripts/getForToken.py
 .manual_pixiv_host_map.json
+/data
