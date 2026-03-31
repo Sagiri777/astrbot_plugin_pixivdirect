@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.2] - 2026-03-31
+
+### Added
+- `/pixiv random` 的 `tag`、`author`、`author_id` 支持同一字段内使用 `&` 组合多个正负筛选条件（负筛选支持 `!` / `！`）
+
+### Fixed
+- 修复多正负筛选混用时随机缓存匹配不完整的问题，现会正确排除任一负筛选命中项并同时满足全部正筛选项
+
 ## [1.10.1] - 2026-03-31
 
 ### Added

@@ -322,8 +322,8 @@ HELP_MENU: list[dict[str, Any]] = [
                 "usage_key": "random",
             },
             {
-                "command": "筛选参数：tag=xxx author=xxx author_id=123 restrict=public|private max_pages=3 warmup=2 random=true（负筛选：tag=!xxx/author=!xxx/author_id=!123，支持!和！）",
-                "description": "随机收藏支持的筛选参数（tag/author/author_id 支持负筛选）",
+                "command": "筛选参数：tag=xxx&!yyy author=aaa&！bbb author_id=123&!456 restrict=public|private max_pages=3 warmup=2 random=true",
+                "description": "随机收藏支持多正负筛选（tag/author/author_id，支持 ! 和 ！）",
             },
         ],
     },
