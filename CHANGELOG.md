@@ -11,10 +11,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - 
 
 ### Changed
-- 
+- Pixiv 直连链路调整为混合模式：优先保留 Accesser 风格的域名解析覆盖，并在同一候选失败后回退到 PixEz 风格的禁用 TLS SNI + 跳过证书校验
+- 新增 `disable_bypass_sni` 运行时配置，关闭绕过后会跳过 DoH 刷新并直接走普通域名请求
 
 ### Fixed
 - 
+
+## [1.10.9] - 2026-03-31
+
+### Changed
+- Pixiv 直连链路调整为混合模式：优先保留 Accesser 风格的域名解析覆盖，并在同一候选失败后回退到 PixEz 风格的禁用 TLS SNI + 跳过证书校验
+- 新增 `disable_bypass_sni` 运行时配置，关闭绕过后会跳过 DoH 刷新并直接走普通域名请求
 
 ## [1.10.8] - 2026-03-31
 

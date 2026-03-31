@@ -164,6 +164,7 @@ EMOJI_MAP: dict[str, int] = {
 }
 
 # Plugin configuration constants
+DISABLE_BYPASS_SNI: bool = False
 DNS_REFRESH_INTERVAL_SECONDS: float = 24 * 60 * 60
 DNS_REFRESH_RETRY_SECONDS: float = 60
 RANDOM_DOWNLOAD_CONCURRENCY: int = 3
@@ -250,12 +251,14 @@ CONFIGURABLE_CONSTANTS: dict[str, Any] = {
     for name, value in globals().items()
     if _is_configurable_constant(name, value)
 }
+CONFIGURABLE_CONSTANTS["disable_bypass_sni"] = DISABLE_BYPASS_SNI
 
 CONFIGURABLE_CONSTANT_NAMES: dict[str, str] = {
     constant_config_key(name): name
     for name, value in globals().items()
     if _is_configurable_constant(name, value)
 }
+CONFIGURABLE_CONSTANT_NAMES["disable_bypass_sni"] = "DISABLE_BYPASS_SNI"
 
 CONFIGURABLE_CONSTANT_ALIASES: dict[str, str] = {}
 for _config_key, _constant_name in CONFIGURABLE_CONSTANT_NAMES.items():

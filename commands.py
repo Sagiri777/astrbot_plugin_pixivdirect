@@ -14,6 +14,7 @@ from .constants import (
     CONFIGURABLE_CONSTANT_NAMES,
     CONFIGURABLE_CONSTANTS,
     DEFAULT_POOL_KEY,
+    DISABLE_BYPASS_SNI,
     MAX_RANDOM_WARMUP,
     MAX_UNIQUE_SCAN_PAGES,
     MULTI_IMAGE_THRESHOLD,
@@ -1304,9 +1305,18 @@ class CommandHandler:
 
         # Handle DNS config
         if len(args) >= 2 and args[1].lower() == "dns":
+            bypass_enabled = not bool(
+                self._config.get_constant("disable_bypass_sni", DISABLE_BYPASS_SNI)
+            )
             if len(args) >= 3 and args[2].lower() == "refresh":
                 if not event.is_admin():
                     yield event.plain_result("❌ 仅 AstrBot 管理员可手动刷新 DNS。")
+                    return
+                if not bypass_enabled:
+                    yield event.plain_result(
+                        "ℹ️ 当前已禁用 SNI 绕过，插件会直接走域名请求，不会执行 DoH 刷新。\n"
+                        "如需恢复 PixEz 风格直连，请使用 /pixiv config set disable_bypass_sni false"
+                    )
                     return
                 if self._dns_refresh_func:
                     await self._dns_refresh_func()
@@ -1322,8 +1332,14 @@ class CommandHandler:
                         next_refresh = self._dns_time_getter()
                     except Exception:
                         pass
+                network_mode = (
+                    "混合绕过模式（Accesser Host/DNS 覆盖 + PixEz 禁用 SNI 回退）"
+                    if bypass_enabled
+                    else "普通域名模式（已禁用 SNI 绕过）"
+                )
                 yield event.plain_result(
                     f"ℹ️ DNS 刷新状态：\n"
+                    f"- 当前网络模式: {network_mode}\n"
                     f"- 下次刷新时间: {next_refresh}\n"
                     f"- 使用 /pixiv dns refresh 手动触发刷新"
                 )
@@ -2387,7 +2403,10 @@ class CommandHandler:
 
         if not illusts:
             try:
-                user_previews, fallback_refresh_token = await self._search_user_previews(
+                (
+                    user_previews,
+                    fallback_refresh_token,
+                ) = await self._search_user_previews(
                     keyword=keyword,
                     page=page,
                     limit=limit,

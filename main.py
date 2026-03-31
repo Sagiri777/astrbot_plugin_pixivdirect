@@ -17,6 +17,7 @@ from .config_manager import ConfigManager
 from .constants import (
     DEFAULT_CACHE_SIZE,
     DEFAULT_POOL_KEY,
+    DISABLE_BYPASS_SNI,
     IDLE_CACHE_COUNT,
     IDLE_CACHE_INTERVAL_SECONDS,
     MAX_RANDOM_PAGES,
@@ -28,7 +29,7 @@ from .pixivSDK import pixiv
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.8")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.10.9")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -180,8 +181,14 @@ class PixivDirectPlugin(Star):
     async def _pixiv_call(
         self, action: str, params: dict[str, Any], **kwargs: Any
     ) -> dict[str, Any]:
-        dns_update_hosts = await self._consume_dns_refresh_flag()
+        disable_bypass_sni = bool(
+            self._config_manager.get_constant("disable_bypass_sni", DISABLE_BYPASS_SNI)
+        )
+        dns_update_hosts = (
+            await self._consume_dns_refresh_flag() if not disable_bypass_sni else False
+        )
         call_kwargs = {
+            "bypass_sni": not disable_bypass_sni,
             "dns_cache_file": str(self._config_manager.host_map_file),
             "dns_update_hosts": dns_update_hosts,
             "runtime_dns_resolve": False,
@@ -202,6 +209,7 @@ class PixivDirectPlugin(Star):
             not result.get("ok")
             and action in {"search_illust", "search_user"}
             and result.get("status") in transient_statuses
+            and not disable_bypass_sni
         ):
             logger.warning(
                 "[pixivdirect] Retrying %s after transient status %s",

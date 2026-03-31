@@ -10,7 +10,7 @@ import ssl
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -79,38 +79,25 @@ API_ACTIONS: dict[str, str] = {
 }
 
 
-class _HostHeaderSSLAdapter(HTTPAdapter):
-    """Use Host header as TLS assert_hostname when connecting to IP directly.
+_ORIGINAL_WRAP_SOCKET = ssl.SSLContext.wrap_socket
 
-    This adapter disables check_hostname in the SSL context to allow
-    connecting to IP addresses while still validating the certificate
-    against the Host header domain (similar to pixez/Accesser approach).
-    """
 
-    def __init__(self, *args: Any, **kwargs: Any):
-        self._ssl_context = ssl.create_default_context()
-        self._ssl_context.check_hostname = False
-        self._ssl_context.verify_mode = ssl.CERT_REQUIRED
-        super().__init__(*args, **kwargs)
-
-    def init_poolmanager(self, *args: Any, **kwargs: Any):
-        kwargs["ssl_context"] = self._ssl_context
-        return super().init_poolmanager(*args, **kwargs)
-
-    def send(self, request: requests.PreparedRequest, **kwargs: Any):
-        host_header = None
-        for key, value in request.headers.items():
-            if key.lower() == "host":
-                host_header = value
-                break
-        if host_header and ":" in host_header:
-            host_header = host_header.split(":", 1)[0]
-        pool_kw = self.poolmanager.connection_pool_kw
-        if host_header:
-            pool_kw["assert_hostname"] = str(host_header)
+def _wrap_socket_without_sni(context: ssl.SSLContext, *args: Any, **kwargs: Any) -> Any:
+    if getattr(_thread_local, "_disable_tls_sni", False):
+        if "server_hostname" in kwargs:
+            kwargs = dict(kwargs)
+            kwargs["server_hostname"] = None
+        elif len(args) >= 4:
+            mutable_args = list(args)
+            mutable_args[3] = None
+            args = tuple(mutable_args)
         else:
-            pool_kw.pop("assert_hostname", None)
-        return super().send(request, **kwargs)
+            kwargs = dict(kwargs)
+            kwargs["server_hostname"] = None
+    return _ORIGINAL_WRAP_SOCKET(context, *args, **kwargs)
+
+
+ssl.SSLContext.wrap_socket = _wrap_socket_without_sni
 
 
 def _is_ipv4(value: str) -> bool:
@@ -589,6 +576,16 @@ def _patched_dns_resolution(host_map: dict[str, str]):
             delattr(_thread_local, "_dns_normalized")
 
 
+@contextmanager
+def _without_tls_sni():
+    previous = getattr(_thread_local, "_disable_tls_sni", False)
+    _thread_local._disable_tls_sni = True
+    try:
+        yield
+    finally:
+        _thread_local._disable_tls_sni = previous
+
+
 def _get_session() -> requests.Session:
     """Get or create a global session for connection reuse."""
     global _global_session
@@ -596,9 +593,7 @@ def _get_session() -> requests.Session:
         with _session_lock:
             if _global_session is None:
                 session = requests.Session()
-                # Use _HostHeaderSSLAdapter for HTTPS with custom SSL context
-                # that disables check_hostname (similar to pixez/Accesser)
-                https_adapter = _HostHeaderSSLAdapter(
+                https_adapter = HTTPAdapter(
                     pool_connections=10,
                     pool_maxsize=20,
                     max_retries=3,
@@ -710,19 +705,24 @@ def pixiv(
 
         def _do_request(
             dns_override: dict[str, str] | None = None,
+            *,
+            verify: bool = True,
+            disable_sni: bool = False,
         ) -> requests.Response:
             last_res: requests.Response | None = None
             for attempt in range(max_retries + 1):
                 with _patched_dns_resolution(dns_override or {}):
-                    res = session.request(
-                        method=method,
-                        url=url,
-                        params=req_params,
-                        data=data,
-                        headers=merged_headers,
-                        proxies=proxies,
-                        timeout=(8, timeout),
-                    )
+                    with _without_tls_sni() if disable_sni else nullcontext():
+                        res = session.request(
+                            method=method,
+                            url=url,
+                            params=req_params,
+                            data=data,
+                            headers=merged_headers,
+                            proxies=proxies,
+                            timeout=(8, timeout),
+                            verify=verify,
+                        )
                 last_res = res
                 if res.status_code != 429:
                     return res
@@ -744,8 +744,29 @@ def pixiv(
                     headers=merged_headers,
                     proxies=proxies,
                     timeout=(8, timeout),
+                    verify=verify,
                 )
             )
+
+        def _do_direct_ip_request(
+            ip: str,
+            *,
+            verify: bool,
+            disable_sni: bool,
+        ) -> requests.Response:
+            bypass_headers = dict(merged_headers)
+            bypass_headers["Host"] = req_host
+            with _without_tls_sni() if disable_sni else nullcontext():
+                return session.request(
+                    method=method,
+                    url=_url_with_ip(ip),
+                    params=req_params,
+                    data=data,
+                    headers=bypass_headers,
+                    proxies=proxies,
+                    timeout=(8, timeout),
+                    verify=verify,
+                )
 
         if not (bypass_sni and req_host in host_map):
             return _do_request()
@@ -754,8 +775,10 @@ def pixiv(
         if has_proxy:
             return _do_request()
 
-        # Accesser 思路：用 IP 建连 + Host 校验，避免域名 SNI。
-        # 连接失败时依次尝试：缓存 IP -> 目标域名 DoH IP -> 系统 DNS 回退。
+        # 混合 Accesser + PixEz：
+        # 1. 先走 Accesser 式“保留域名 URL + 指定候选 IP 解析”
+        # 2. 同一候选失败后再走 PixEz 式“IP 直连 + Host + 禁用 SNI/证书校验”
+        # 3. 候选依次来自：内置 IP -> 缓存 IP -> 目标域名 DoH IP -> 别名域名 DoH IP
         ip_candidates: list[str] = []
         builtin_ip = PIXEZ_HOST_MAP.get(req_host)
         if builtin_ip:
@@ -789,23 +812,39 @@ def pixiv(
         last_res: requests.Response | None = None
         attempted = False
         for ip in ip_candidates:
+            accesser_exc: Exception | None = None
             try:
                 attempted = True
-                bypass_headers = dict(merged_headers)
-                bypass_headers["Host"] = req_host
-                res = session.request(
-                    method=method,
-                    url=_url_with_ip(ip),
-                    params=req_params,
-                    data=data,
-                    headers=bypass_headers,
-                    proxies=proxies,
-                    timeout=(8, timeout),
+                res = _do_request(
+                    dns_override={req_host: ip},
+                    verify=True,
+                    disable_sni=False,
                 )
                 last_res = res
+                if res.ok:
+                    return res
                 if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
                     logger.warning(
-                        "[pixivdirect] %s returned status %s via IP %s, trying next candidate",
+                        "[pixivdirect] %s returned status %s via Accesser-style candidate %s, trying PixEz-style fallback",
+                        action,
+                        res.status_code,
+                        ip,
+                    )
+                else:
+                    return res
+            except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
+                accesser_exc = exc
+                last_exc = exc
+
+            try:
+                attempted = True
+                res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
+                last_res = res
+                if res.ok:
+                    return res
+                if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
+                    logger.warning(
+                        "[pixivdirect] %s returned status %s via PixEz-style candidate %s, trying next candidate",
                         action,
                         res.status_code,
                         ip,
@@ -814,6 +853,14 @@ def pixiv(
                 return res
             except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
                 last_exc = exc
+                if accesser_exc is not None:
+                    logger.warning(
+                        "[pixivdirect] %s failed on candidate %s with Accesser-style error=%s and PixEz-style error=%s",
+                        action,
+                        ip,
+                        accesser_exc,
+                        exc,
+                    )
                 continue
 
         # 仅在主域名候选全部失败后，再尝试 Accesser 风格的别名域名解析。
@@ -837,26 +884,49 @@ def pixiv(
             for ip in ranked_alias_ips:
                 if ip in ip_candidates:
                     continue
+                accesser_exc = None
                 try:
                     attempted = True
-                    bypass_headers = dict(merged_headers)
-                    bypass_headers["Host"] = req_host
-                    res = session.request(
-                        method=method,
-                        url=_url_with_ip(ip),
-                        params=req_params,
-                        data=data,
-                        headers=bypass_headers,
-                        proxies=proxies,
-                        timeout=(8, timeout),
+                    res = _do_request(
+                        dns_override={req_host: ip},
+                        verify=True,
+                        disable_sni=False,
                     )
                     last_res = res
+                    if res.ok:
+                        return res
                     if (
                         runtime_dns_resolve
                         and res.status_code in retryable_bypass_statuses
                     ):
                         logger.warning(
-                            "[pixivdirect] %s returned status %s via alias IP %s, trying next candidate",
+                            "[pixivdirect] %s returned status %s via Accesser-style alias candidate %s, trying PixEz-style fallback",
+                            action,
+                            res.status_code,
+                            ip,
+                        )
+                    else:
+                        return res
+                except (
+                    RequestsConnectionError,
+                    RequestsTimeout,
+                    RequestsSSLError,
+                ) as exc:
+                    accesser_exc = exc
+                    last_exc = exc
+
+                try:
+                    attempted = True
+                    res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
+                    last_res = res
+                    if res.ok:
+                        return res
+                    if (
+                        runtime_dns_resolve
+                        and res.status_code in retryable_bypass_statuses
+                    ):
+                        logger.warning(
+                            "[pixivdirect] %s returned status %s via PixEz-style alias candidate %s, trying next candidate",
                             action,
                             res.status_code,
                             ip,
@@ -869,6 +939,14 @@ def pixiv(
                     RequestsSSLError,
                 ) as exc:
                     last_exc = exc
+                    if accesser_exc is not None:
+                        logger.warning(
+                            "[pixivdirect] %s failed on alias candidate %s with Accesser-style error=%s and PixEz-style error=%s",
+                            action,
+                            ip,
+                            accesser_exc,
+                            exc,
+                        )
                     continue
 
         # 搜索接口在所有 IP 候选都返回 403 时，再补一次原域名直连，
