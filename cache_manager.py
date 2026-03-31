@@ -165,12 +165,43 @@ class CacheManager:
         item: dict[str, Any], filter_params: dict[str, Any]
     ) -> bool:
         """Check if a cached item matches the given filter criteria."""
+        item_tags = item.get("tags", [])
+        if not isinstance(item_tags, list):
+            item_tags = []
+
+        caption = item.get("caption", "")
+        if not isinstance(caption, str):
+            caption = ""
+
+        item_author_id = item.get("author_id")
+
+        # Negative tag filter: item tags must NOT include excluded tag (case-insensitive)
+        exclude_tag_filter = filter_params.get("exclude_tag")
+        if exclude_tag_filter:
+            exclude_tag_lower = str(exclude_tag_filter).lower()
+            if any(
+                isinstance(tag, str) and tag.lower() == exclude_tag_lower
+                for tag in item_tags
+            ):
+                return False
+
+        # Negative author filter: caption must NOT include excluded author text
+        exclude_author_filter = filter_params.get("exclude_author")
+        if (
+            exclude_author_filter
+            and str(exclude_author_filter).lower() in caption.lower()
+        ):
+            return False
+
+        # Negative author ID filter: item author_id must NOT equal excluded author_id
+        exclude_author_id_filter = filter_params.get("exclude_author_id")
+        if exclude_author_id_filter is not None and item_author_id is not None:
+            if int(item_author_id) == int(exclude_author_id_filter):
+                return False
+
         # Tag filter: item tags must include the requested tag (case-insensitive)
         tag_filter = filter_params.get("tag")
         if tag_filter:
-            item_tags = item.get("tags", [])
-            if not isinstance(item_tags, list):
-                return False
             tag_lower = str(tag_filter).lower()
             if not any(
                 isinstance(t, str) and t.lower() == tag_lower for t in item_tags
@@ -180,16 +211,12 @@ class CacheManager:
         # Author filter: check caption for author name
         author_filter = filter_params.get("author")
         if author_filter:
-            caption = item.get("caption", "")
-            if not isinstance(caption, str):
-                return False
             if str(author_filter).lower() not in caption.lower():
                 return False
 
         # Author ID filter: check author_id field or caption
         author_id_filter = filter_params.get("author_id")
         if author_id_filter is not None:
-            item_author_id = item.get("author_id")
             if item_author_id is not None and int(item_author_id) != int(
                 author_id_filter
             ):
@@ -208,8 +235,11 @@ class CacheManager:
         """Normalize random filter parameters for cache/stat identity."""
         identity = {
             "tag": filter_params.get("tag"),
+            "exclude_tag": filter_params.get("exclude_tag"),
             "author": filter_params.get("author"),
+            "exclude_author": filter_params.get("exclude_author"),
             "author_id": filter_params.get("author_id"),
+            "exclude_author_id": filter_params.get("exclude_author_id"),
             "restrict": filter_params.get("restrict", "public"),
             "max_pages": filter_params.get("max_pages", 3),
         }
@@ -250,22 +280,45 @@ class CacheManager:
             value = value_raw.strip()
             if not key or not value:
                 continue
-            params[key] = value
+            is_negative = value.startswith(("!", "！"))
+            normalized_value = value[1:].strip() if is_negative else value
+            if not normalized_value:
+                continue
+            if key in {"tag", "author", "author_id"} and is_negative:
+                params[f"exclude_{key}"] = normalized_value
+                continue
+            params[key] = normalized_value
 
         if loose_text and "tag" not in params:
-            params["tag"] = " ".join(loose_text)
+            loose_tag = " ".join(loose_text).strip()
+            if loose_tag:
+                if loose_tag.startswith(("!", "！")):
+                    normalized_loose_tag = loose_tag[1:].strip()
+                    if normalized_loose_tag:
+                        params["exclude_tag"] = normalized_loose_tag
+                else:
+                    params["tag"] = loose_tag
 
         # Normalize common tag aliases (e.g. R18 -> R-18).
         if "tag" in params:
             tag_value = str(params["tag"]).strip()
             if tag_value.upper() == "R18":
                 params["tag"] = "R-18"
+        if "exclude_tag" in params:
+            exclude_tag_value = str(params["exclude_tag"]).strip()
+            if exclude_tag_value.upper() == "R18":
+                params["exclude_tag"] = "R-18"
 
         if "author_id" in params:
             try:
                 params["author_id"] = int(str(params["author_id"]))
             except ValueError:
                 params.pop("author_id", None)
+        if "exclude_author_id" in params:
+            try:
+                params["exclude_author_id"] = int(str(params["exclude_author_id"]))
+            except ValueError:
+                params.pop("exclude_author_id", None)
 
         if "max_pages" in params:
             try:
@@ -299,9 +352,23 @@ class CacheManager:
             )
 
         summary_items: list[str] = []
-        for key in ("tag", "author", "author_id", "restrict", "max_pages", "count"):
+        for key in (
+            "tag",
+            "exclude_tag",
+            "author",
+            "exclude_author",
+            "author_id",
+            "exclude_author_id",
+            "restrict",
+            "max_pages",
+            "count",
+        ):
             if key in params:
-                summary_items.append(f"{key}={params[key]}")
+                value = params[key]
+                if key.startswith("exclude_"):
+                    summary_items.append(f"{key[8:]}=!{value}")
+                else:
+                    summary_items.append(f"{key}={value}")
         if params.get("random") is True:
             summary_items.append("random=true")
         summary = ", ".join(summary_items) if summary_items else "无"

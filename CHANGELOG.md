@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.10.1] - 2026-03-31
+
+### Added
+- `/pixiv random` 筛选参数支持负筛选语法（`!` / `！`），可用于 `tag`、`author`、`author_id`
+
+### Fixed
+- 修复随机缓存筛选逻辑未正确排除负筛选条件的问题，避免返回包含被排除标签、作者或作者 ID 的图片
+
 ## [1.10.0] - 2026-03-30
 
 ### Added
