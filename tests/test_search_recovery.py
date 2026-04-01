@@ -203,6 +203,65 @@ def test_non_search_requests_ignore_search_budget(monkeypatch) -> None:
     assert direct_ip_calls == ["210.140.139.155", "1.1.1.1", "2.2.2.2"]
 
 
+def test_web_search_does_not_require_refresh_token(monkeypatch) -> None:
+    captured_headers: dict[str, object] = {}
+
+    def handler(**kwargs):
+        captured_headers.update(kwargs.get("headers") or {})
+        return _FakeResponse(
+            200,
+            {
+                "error": False,
+                "body": {
+                    "illustManga": {
+                        "data": [],
+                        "total": 0,
+                    }
+                },
+            },
+        )
+
+    session = _FakeSession(handler)
+    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
+
+    result = pixiv_sdk.pixiv(
+        "web_search_illust",
+        {"word": "TwiAtri"},
+        refresh_token=None,
+        access_token=None,
+        bypass_sni=False,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == 200
+    assert captured_headers["X-Requested-With"] == "XMLHttpRequest"
+    assert "Mozilla/5.0" in str(captured_headers["User-Agent"])
+
+
+def test_image_request_does_not_require_refresh_token(monkeypatch) -> None:
+    captured_headers: dict[str, object] = {}
+
+    def handler(**kwargs):
+        captured_headers.update(kwargs.get("headers") or {})
+        return _FakeResponse(200, payload=None, text="ok")
+
+    session = _FakeSession(handler)
+    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
+
+    result = pixiv_sdk.pixiv(
+        "image",
+        {"url": "https://i.pximg.net/img-original/img/test.jpg"},
+        refresh_token=None,
+        access_token=None,
+        bypass_sni=False,
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == 200
+    assert captured_headers["Referer"] == "https://app-api.pixiv.net/"
+    assert captured_headers["User-Agent"] == pixiv_sdk.IMAGE_UA
+
+
 def test_search_request_chain_falls_back_to_web() -> None:
     class _DummyRunner:
         def __init__(self) -> None:
@@ -289,7 +348,11 @@ def test_search_with_recovery_escalates_to_proxy_after_web_failure() -> None:
         ):
             self.calls.append(proxy)
             if proxy is None:
-                return {"ok": False, "status": 403, "fallback_chain": ["app_api", "web"]}
+                return {
+                    "ok": False,
+                    "status": 403,
+                    "fallback_chain": ["app_api", "web"],
+                }
             return {"ok": True, "status": 200, "data": {}, "fallback_chain": []}
 
     runner = _DummyRunner()

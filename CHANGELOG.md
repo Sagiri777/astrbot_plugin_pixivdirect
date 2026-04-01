@@ -14,7 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 -
 
 ### Fixed
-- 
+-
+
+## [1.11.5] - 2026-04-01
+
+### Fixed
+- 修复 `web_search_illust` 与 `web_search_user` 在未显式提供 token 时仍会先触发 refresh token 请求的问题，Web Ajax 搜索现在可按无鉴权请求直接发起
+- 修复图片与 ugoira zip 下载在仅提供资源 URL 时仍会被错误要求先鉴权的问题，避免无必要的 OAuth 请求
+- 修复 Pixiv Web Ajax 搜索沿用 App API User-Agent 的问题，改为使用浏览器风格请求头以匹配 Web 接口场景
 
 ## [1.11.4] - 2026-04-01
 

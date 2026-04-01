@@ -51,6 +51,11 @@ PIXIV_CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
 API_BASE = "https://app-api.pixiv.net"
 OAUTH_URL = "https://oauth.secure.pixiv.net/auth/token"
 PIXIV_UA = "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"
+PIXIV_WEB_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/135.0.0.0 Safari/537.36"
+)
 IMAGE_UA = "PixivIOSApp/5.8.0"
 IMAGE_REFERER = "https://app-api.pixiv.net/"
 PIXIV_APP_FILTER = "for_android"
@@ -81,6 +86,14 @@ API_ACTIONS: dict[str, str] = {
     "search_user": "/v1/search/user",
     "ugoira_metadata": "/v1/ugoira/metadata",
 }
+
+AUTH_OPTIONAL_ACTIONS: set[str] = {
+    "image",
+    "ugoira_zip",
+    "web_search_illust",
+    "web_search_user",
+}
+
 APP_API_FILTER_ACTIONS: set[str] = {
     "illust_detail",
     "illust_ranking",
@@ -959,12 +972,17 @@ def pixiv(
         retryable_failure_count = 0
         stop_retry_iteration = False
         req_host = (urlsplit(url).hostname or "").lower().rstrip(".")
+        is_web_request = req_host == "www.pixiv.net"
         merged_headers = {
-            "User-Agent": IMAGE_UA if image_mode else PIXIV_UA,
+            "User-Agent": (
+                IMAGE_UA if image_mode else PIXIV_WEB_UA if is_web_request else PIXIV_UA
+            ),
             "Accept-Language": accept_language,
         }
         if image_mode:
             merged_headers["Referer"] = IMAGE_REFERER
+        elif is_web_request:
+            merged_headers.setdefault("Accept", "application/json, text/plain, */*")
         if not image_mode and req_host in {
             "app-api.pixiv.net",
             "oauth.secure.pixiv.net",
@@ -1370,8 +1388,10 @@ def pixiv(
             raise last_exc
         return _do_request()
 
-    # 1) 若没给 access_token，则自动用 refresh_token 换取。
-    if not access_token:
+    requires_auth = action not in AUTH_OPTIONAL_ACTIONS
+
+    # 1) 若请求需要鉴权且没给 access_token，则自动用 refresh_token 换取。
+    if requires_auth and not access_token:
         refresh_token = (
             refresh_token
             or os.getenv("PIXIV_REFRESH_TOKEN")
