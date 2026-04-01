@@ -144,7 +144,14 @@ def _run_call(
 
     throttler.wait()
     started = time.perf_counter()
-    result = pixiv(action, params, **call_kwargs)
+    try:
+        result = pixiv(action, params, **call_kwargs)
+    except Exception as exc:
+        result = {
+            "ok": False,
+            "status": "exception",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     elapsed_ms = int((time.perf_counter() - started) * 1000)
     return result, elapsed_ms
 
@@ -182,9 +189,10 @@ def _collect_search_check(
             "search_retryable_failure_budget": 2,
         },
     )
+    error = str(result.get("error") or "").strip()
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     illusts = data.get("illusts") if isinstance(data.get("illusts"), list) else []
-    detail = f"illusts={len(illusts)}"
+    detail = error or f"illusts={len(illusts)}"
     return CheckResult(
         mode=mode.name,
         check="search_illust",
@@ -213,6 +221,7 @@ def _collect_detail_and_image_checks(
         runtime_dns_resolve=runtime_dns_resolve,
         throttler=throttler,
     )
+    ranking_error = str(ranking_result.get("error") or "").strip()
     ranking_data = (
         ranking_result.get("data")
         if isinstance(ranking_result.get("data"), dict)
@@ -238,7 +247,7 @@ def _collect_detail_and_image_checks(
             ok=bool(ranking_result.get("ok")),
             status=_format_status(ranking_result),
             elapsed_ms=ranking_elapsed_ms,
-            detail=f"illust_id={resolved_illust_id or '-'}",
+            detail=ranking_error or f"illust_id={resolved_illust_id or '-'}",
         )
     ]
     if not ranking_result.get("ok") or resolved_illust_id is None:
@@ -253,6 +262,7 @@ def _collect_detail_and_image_checks(
         runtime_dns_resolve=runtime_dns_resolve,
         throttler=throttler,
     )
+    detail_error = str(detail_result.get("error") or "").strip()
     detail_data = (
         detail_result.get("data") if isinstance(detail_result.get("data"), dict) else {}
     )
@@ -267,7 +277,7 @@ def _collect_detail_and_image_checks(
             ok=bool(detail_result.get("ok")),
             status=_format_status(detail_result),
             elapsed_ms=detail_elapsed_ms,
-            detail=f"image_url={'yes' if image_url else 'no'}",
+            detail=detail_error or f"image_url={'yes' if image_url else 'no'}",
         )
     )
     if not detail_result.get("ok") or not image_url:
@@ -287,6 +297,7 @@ def _collect_detail_and_image_checks(
         runtime_dns_resolve=runtime_dns_resolve,
         throttler=throttler,
     )
+    image_error = str(image_result.get("error") or "").strip()
     content_type = str(image_result.get("content_type") or "-")
     results.append(
         CheckResult(
@@ -295,7 +306,7 @@ def _collect_detail_and_image_checks(
             ok=bool(image_result.get("ok")),
             status=_format_status(image_result),
             elapsed_ms=image_elapsed_ms,
-            detail=content_type,
+            detail=image_error or content_type,
         )
     )
     return results

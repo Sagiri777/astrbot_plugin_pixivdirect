@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
-- 新增 `scripts/test_bypass_modes.py`，可按保守节流频率对比 `auto`、`pixez`、`accesser` 与直连模式下的搜索、详情和图片请求表现
+- 
 
 ### Changed
 -
@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [1.11.7] - 2026-04-01
+
+### Changed
+- `scripts/test_bypass_modes.py` 现在会将异常收敛为失败结果并继续后续模式测试，便于直接比较 `pixez` 与 `accesser` 的表现
+
+### Fixed
+- 为 PixEz 直连分支补充单候选失败日志，避免测试时只看到 Accesser 分支告警而看不到 PixEz 实际尝试情况
+- 修复 `accesser` 模式仍沿用原始 Pixiv 域名发起 TLS 请求的问题，改为真正使用别名域名链路并按别名候选 IP 发起请求
 ## [1.11.6] - 2026-04-01
 
 ### Added

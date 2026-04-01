@@ -1020,19 +1020,35 @@ def pixiv(
                 )
             )
 
+        def _url_with_host(host: str) -> str:
+            netloc = host
+            if req_split.port:
+                netloc = f"{host}:{req_split.port}"
+            return urlunsplit(
+                (
+                    req_split.scheme,
+                    netloc,
+                    req_split.path,
+                    req_split.query,
+                    req_split.fragment,
+                )
+            )
+
         def _do_request(
+            target_url: str | None = None,
             dns_override: dict[str, str] | None = None,
             *,
             verify: bool = True,
             disable_sni: bool = False,
         ) -> requests.Response:
             last_res: requests.Response | None = None
+            request_url = target_url or url
             for attempt in range(max_retries + 1):
                 with _patched_dns_resolution(dns_override or {}):
                     with _without_tls_sni() if disable_sni else nullcontext():
                         res = session.request(
                             method=method,
-                            url=url,
+                            url=request_url,
                             params=req_params,
                             data=data,
                             headers=merged_headers,
@@ -1055,7 +1071,7 @@ def pixiv(
                 if last_res is not None
                 else session.request(
                     method=method,
-                    url=url,
+                    url=request_url,
                     params=req_params,
                     data=data,
                     headers=merged_headers,
@@ -1084,6 +1100,20 @@ def pixiv(
                     timeout=(connect_timeout, timeout),
                     verify=verify,
                 )
+
+        def _do_alias_host_request(
+            alias_host: str,
+            *,
+            alias_ip: str | None = None,
+        ) -> requests.Response:
+            target_url = _url_with_host(alias_host)
+            dns_override = {alias_host: alias_ip} if alias_ip else None
+            return _do_request(
+                target_url=target_url,
+                dns_override=dns_override,
+                verify=True,
+                disable_sni=False,
+            )
 
         def _build_error_response(status_code: int, message: str) -> requests.Response:
             response = requests.Response()
@@ -1197,51 +1227,19 @@ def pixiv(
                     RequestsSSLError,
                 ) as exc:
                     last_exc = exc
+                    logger.warning(
+                        "[pixivdirect] %s failed on PixEz-style candidate %s with bypass_mode=%s error=%s",
+                        action,
+                        ip,
+                        normalized_bypass_mode,
+                        exc,
+                    )
                     if _consume_retryable_failure("network error", candidate=ip):
                         stop_retry_iteration = True
                         break
 
             if stop_retry_iteration:
                 break
-
-            if not allow_accesser:
-                continue
-
-            try:
-                attempted = True
-                res = _do_request(
-                    dns_override={req_host: ip},
-                    verify=True,
-                    disable_sni=False,
-                )
-                last_res = res
-                if res.ok:
-                    return res
-                if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
-                    if _consume_retryable_failure("status", candidate=ip):
-                        stop_retry_iteration = True
-                        break
-                    logger.warning(
-                        "[pixivdirect] %s returned status %s via Accesser-style candidate %s, trying next candidate",
-                        action,
-                        res.status_code,
-                        ip,
-                    )
-                    continue
-                return res
-            except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
-                last_exc = exc
-                logger.warning(
-                    "[pixivdirect] %s failed on candidate %s with bypass_mode=%s error=%s",
-                    action,
-                    ip,
-                    normalized_bypass_mode,
-                    exc,
-                )
-                if _consume_retryable_failure("network error", candidate=ip):
-                    stop_retry_iteration = True
-                    break
-                continue
 
         if stop_retry_iteration:
             logger.warning(
@@ -1277,47 +1275,9 @@ def pixiv(
                 label="alias DNS",
             )
             for ip in alias_candidates:
-                if allow_pixez:
-                    try:
-                        attempted = True
-                        res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
-                        last_res = res
-                        if res.ok:
-                            return res
-                        if (
-                            runtime_dns_resolve
-                            and res.status_code in retryable_bypass_statuses
-                        ):
-                            if _consume_retryable_failure("status", candidate=ip):
-                                stop_retry_iteration = True
-                                break
-                            logger.warning(
-                                "[pixivdirect] %s returned status %s via PixEz-style alias candidate %s, trying Accesser-style fallback",
-                                action,
-                                res.status_code,
-                                ip,
-                            )
-                        else:
-                            return res
-                    except (
-                        RequestsConnectionError,
-                        RequestsTimeout,
-                        RequestsSSLError,
-                    ) as exc:
-                        last_exc = exc
-                        if _consume_retryable_failure("network error", candidate=ip):
-                            stop_retry_iteration = True
-                            break
-
-                if stop_retry_iteration:
-                    break
                 try:
                     attempted = True
-                    res = _do_request(
-                        dns_override={req_host: ip},
-                        verify=True,
-                        disable_sni=False,
-                    )
+                    res = _do_alias_host_request(alias_host, alias_ip=ip)
                     last_res = res
                     if res.ok:
                         return res
@@ -1329,9 +1289,10 @@ def pixiv(
                             stop_retry_iteration = True
                             break
                         logger.warning(
-                            "[pixivdirect] %s returned status %s via Accesser-style alias candidate %s, trying next candidate",
+                            "[pixivdirect] %s returned status %s via Accesser-style alias %s candidate %s, trying next candidate",
                             action,
                             res.status_code,
+                            alias_host,
                             ip,
                         )
                         continue
@@ -1343,8 +1304,9 @@ def pixiv(
                 ) as exc:
                     last_exc = exc
                     logger.warning(
-                        "[pixivdirect] %s failed on alias candidate %s with bypass_mode=%s error=%s",
+                        "[pixivdirect] %s failed on Accesser-style alias %s candidate %s with bypass_mode=%s error=%s",
                         action,
+                        alias_host,
                         ip,
                         normalized_bypass_mode,
                         exc,
