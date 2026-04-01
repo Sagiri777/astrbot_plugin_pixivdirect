@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [1.11.8] - 2026-04-01
+
+### Fixed
+- 修复 `scripts/test_bypass_modes.py` 在 SDK 加载、token 读取或单个 mode/check 抛出异常时会直接退出的问题，改为统一收敛为失败结果并继续输出最终汇总表
 ## [1.11.7] - 2026-04-01
 
 ### Changed

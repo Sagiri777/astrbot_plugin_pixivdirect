@@ -37,9 +37,9 @@ def _load_sdk_module():
     return module
 
 
-SDK = _load_sdk_module()
-pixiv = SDK.pixiv
-pick_image_url = SDK._pick_illust_image_url
+SDK: Any | None = None
+pixiv: Any | None = None
+pick_image_url: Any | None = None
 
 
 @dataclass(slots=True)
@@ -57,6 +57,33 @@ class CheckResult:
     status: int | str
     elapsed_ms: int
     detail: str
+
+
+def _load_sdk_once() -> None:
+    global SDK, pixiv, pick_image_url
+    if SDK is not None:
+        return
+    SDK = _load_sdk_module()
+    pixiv = SDK.pixiv
+    pick_image_url = SDK._pick_illust_image_url
+
+
+def _failure_result(
+    mode: str,
+    check: str,
+    detail: str,
+    *,
+    status: int | str = "exception",
+    elapsed_ms: int = 0,
+) -> CheckResult:
+    return CheckResult(
+        mode=mode,
+        check=check,
+        ok=False,
+        status=status,
+        elapsed_ms=elapsed_ms,
+        detail=detail,
+    )
 
 
 class RequestThrottler:
@@ -129,6 +156,7 @@ def _run_call(
     access_token: str | None = None,
     extra: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int]:
+    _load_sdk_once()
     call_kwargs = {
         "refresh_token": refresh_token,
         "access_token": access_token,
@@ -146,7 +174,9 @@ def _run_call(
     started = time.perf_counter()
     try:
         result = pixiv(action, params, **call_kwargs)
-    except Exception as exc:
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:
         result = {
             "ok": False,
             "status": "exception",
@@ -269,7 +299,7 @@ def _collect_detail_and_image_checks(
     illust = (
         detail_data.get("illust") if isinstance(detail_data.get("illust"), dict) else {}
     )
-    image_url = pick_image_url(illust, "medium") if illust else None
+    image_url = pick_image_url(illust, "medium") if illust and pick_image_url else None
     results.append(
         CheckResult(
             mode=mode.name,
@@ -378,11 +408,39 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    refresh_token = _load_refresh_token(args.refresh_token.strip() or None)
     dns_cache_file = Path(args.dns_cache_file)
     requested_checks = set(args.checks)
     results: list[CheckResult] = []
     throttler = RequestThrottler(args.cooldown_seconds)
+    try:
+        _load_sdk_once()
+        refresh_token = _load_refresh_token(args.refresh_token.strip() or None)
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:
+        for name in args.modes:
+            mode = _resolve_mode(name)
+            if "search" in requested_checks:
+                results.append(
+                    _failure_result(
+                        mode.name,
+                        "search_illust",
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                )
+            if {"detail", "image"} & requested_checks:
+                results.append(
+                    _failure_result(
+                        mode.name,
+                        "illust_ranking",
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                )
+        print()
+        _print_results(results)
+        print()
+        print(f"[bypass-test] completed with {len(results)} failed checks")
+        return 1
 
     for name in args.modes:
         mode = _resolve_mode(name)
@@ -392,28 +450,50 @@ def main() -> int:
         )
 
         if "search" in requested_checks:
-            results.append(
-                _collect_search_check(
-                    mode,
-                    refresh_token=refresh_token,
-                    dns_cache_file=dns_cache_file,
-                    keyword=args.keyword,
-                    runtime_dns_resolve=args.runtime_dns_resolve,
-                    throttler=throttler,
+            try:
+                results.append(
+                    _collect_search_check(
+                        mode,
+                        refresh_token=refresh_token,
+                        dns_cache_file=dns_cache_file,
+                        keyword=args.keyword,
+                        runtime_dns_resolve=args.runtime_dns_resolve,
+                        throttler=throttler,
+                    )
                 )
-            )
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:
+                results.append(
+                    _failure_result(
+                        mode.name,
+                        "search_illust",
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                )
 
         if {"detail", "image"} & requested_checks:
-            results.extend(
-                _collect_detail_and_image_checks(
-                    mode,
-                    refresh_token=refresh_token,
-                    dns_cache_file=dns_cache_file,
-                    illust_id=args.illust_id,
-                    runtime_dns_resolve=args.runtime_dns_resolve,
-                    throttler=throttler,
+            try:
+                results.extend(
+                    _collect_detail_and_image_checks(
+                        mode,
+                        refresh_token=refresh_token,
+                        dns_cache_file=dns_cache_file,
+                        illust_id=args.illust_id,
+                        runtime_dns_resolve=args.runtime_dns_resolve,
+                        throttler=throttler,
+                    )
                 )
-            )
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:
+                results.append(
+                    _failure_result(
+                        mode.name,
+                        "illust_ranking",
+                        f"{type(exc).__name__}: {exc}",
+                    )
+                )
 
     print()
     _print_results(results)
