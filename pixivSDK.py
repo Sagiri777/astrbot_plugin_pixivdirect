@@ -81,6 +81,15 @@ API_ACTIONS: dict[str, str] = {
     "search_user": "/v1/search/user",
     "ugoira_metadata": "/v1/ugoira/metadata",
 }
+APP_API_FILTER_ACTIONS: set[str] = {
+    "illust_detail",
+    "illust_ranking",
+    "illust_recommended",
+    "search_illust",
+    "search_user",
+    "user_detail",
+    "user_illusts",
+}
 
 WEB_SEARCH_SORT_MAP: dict[str, str] = {
     "date_desc": "date_d",
@@ -949,12 +958,26 @@ def pixiv(
         )
         retryable_failure_count = 0
         stop_retry_iteration = False
+        req_host = (urlsplit(url).hostname or "").lower().rstrip(".")
         merged_headers = {
             "User-Agent": IMAGE_UA if image_mode else PIXIV_UA,
             "Accept-Language": accept_language,
         }
         if image_mode:
             merged_headers["Referer"] = IMAGE_REFERER
+        if not image_mode and req_host in {
+            "app-api.pixiv.net",
+            "oauth.secure.pixiv.net",
+        }:
+            now = _pixiv_client_time()
+            merged_headers.setdefault("X-Client-Time", now)
+            merged_headers.setdefault(
+                "X-Client-Hash",
+                hashlib.md5((now + PIXIV_HASH_SALT).encode("utf-8")).hexdigest(),
+            )
+            merged_headers.setdefault("App-OS", "Android")
+            merged_headers.setdefault("App-OS-Version", "Android 11")
+            merged_headers.setdefault("App-Version", "5.0.234")
         if with_auth:
             if not access_token:
                 raise ValueError("Missing access_token after auth.")
@@ -962,7 +985,6 @@ def pixiv(
         if headers:
             merged_headers.update(headers)
 
-        req_host = (urlsplit(url).hostname or "").lower().rstrip(".")
         req_split = urlsplit(url)
         has_proxy = bool(proxies) or bool(get_environ_proxies(url))
 
@@ -1704,7 +1726,7 @@ def pixiv(
         }
         sort = str(params.get("sort") or "date_desc").strip().lower()
         mapped_sort = WEB_SEARCH_SORT_MAP.get(sort)
-        if mapped_sort:
+        if mapped_sort and action == "web_search_illust":
             web_params["order"] = mapped_sort
 
         target = str(params.get("search_target") or "").strip().lower()
@@ -1782,8 +1804,9 @@ def pixiv(
     api_url = f"{API_BASE}{path}"
 
     api_params = dict(params)
-    if action == "search_illust":
+    if action in APP_API_FILTER_ACTIONS:
         api_params.setdefault("filter", PIXIV_APP_FILTER)
+    if action == "search_illust":
         if isinstance(api_params.get("include_translated_tag_results"), bool):
             api_params["include_translated_tag_results"] = (
                 "true" if api_params["include_translated_tag_results"] else "false"
@@ -1794,7 +1817,8 @@ def pixiv(
             )
         api_params.setdefault("merge_plain_keyword_results", "true")
     elif action == "search_user":
-        api_params.setdefault("filter", PIXIV_APP_FILTER)
+        api_params.pop("sort", None)
+        api_params.pop("search_target", None)
 
     res = send("GET", api_url, req_params=api_params, with_auth=True)
 

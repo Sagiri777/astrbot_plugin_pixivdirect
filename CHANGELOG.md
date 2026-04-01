@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 - 
 
+## [1.11.4] - 2026-04-01
+
+### Fixed
+- 补齐作品/作者详情等 App API 请求的 `filter=for_android` 默认参数，保持与 PixEz 请求一致
+- Web 搜索兜底仅在作品搜索时传递排序参数，避免作者搜索携带无效排序字段
+
 ## [1.11.3] - 2026-03-31
 
 ### Changed
