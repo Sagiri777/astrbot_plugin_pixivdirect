@@ -31,7 +31,7 @@ from .pixivSDK import pixiv, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.11.5")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.11.6")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)

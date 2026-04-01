@@ -8,13 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
--
+- 新增 `scripts/test_bypass_modes.py`，可按保守节流频率对比 `auto`、`pixez`、`accesser` 与直连模式下的搜索、详情和图片请求表现
 
 ### Changed
 -
 
 ### Fixed
 -
+
+## [1.11.6] - 2026-04-01
+
+### Added
+- 新增 `scripts/test_bypass_modes.py`，可按保守节流频率对比 `auto`、`pixez`、`accesser` 与直连模式下的搜索、详情和图片请求表现
 
 ## [1.11.5] - 2026-04-01
 
