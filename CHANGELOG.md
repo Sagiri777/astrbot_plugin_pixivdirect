@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [1.12.0] - 2026-04-02
+
+### Added
+- 新增收藏元数据缓存、两天新用户元数据预热，以及 `bookmark_metadata_cache.json`、`metadata_warmup_state.json` 等持久化文件
+- 新增 `/pixiv random source` 与 `/pixiv imagehost` 命令，支持 random 的元数据读取层级与通用 HTTP 图床上传配置
+- 新增图床上传模块与相关测试，支持按 JSON 路径提取返回图片 URL
+
+### Changed
+- `/pixiv random` 现在默认按 本地图片缓存 > 元数据缓存 > 实时随机 的顺序取图，并在任一路径下载前优先复用本地缓存
+- 新用户登录成功后会自动创建两天的公开收藏元数据预热窗口，后台分批扫描并写入元数据缓存
+
+### Fixed
+- 随机命中仅有元数据但尚未下载图片的作品时，现可即时补图并回填本地图片缓存，不再只能依赖实时随机接口
+
 ## [1.11.8] - 2026-04-01
 
 ### Fixed

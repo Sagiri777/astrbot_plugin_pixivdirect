@@ -654,6 +654,41 @@ def _pick_illust_image_urls(
     return urls
 
 
+def _illust_to_metadata_entry(
+    illust: dict[str, Any],
+    *,
+    restrict: str,
+    quality: str = "original",
+) -> dict[str, Any]:
+    user = illust.get("user") if isinstance(illust.get("user"), dict) else {}
+    tags: list[str] = []
+    raw_tags = illust.get("tags")
+    if isinstance(raw_tags, list):
+        for item in raw_tags:
+            if isinstance(item, dict):
+                name = item.get("name")
+                if isinstance(name, str) and name:
+                    tags.append(name)
+
+    return {
+        "illust_id": illust.get("id"),
+        "title": illust.get("title"),
+        "author_id": user.get("id"),
+        "author_name": user.get("name"),
+        "tags": tags,
+        "x_restrict": illust.get("x_restrict", 0),
+        "page_count": illust.get("page_count", 1),
+        "image_urls": _pick_illust_image_urls(illust, quality),
+        "caption_seed": {
+            "total_view": illust.get("total_view"),
+            "total_bookmarks": illust.get("total_bookmarks"),
+            "create_date": illust.get("create_date"),
+        },
+        "bookmark_restrict": restrict,
+        "cached_at": datetime.now().isoformat(),
+    }
+
+
 def _match_author(
     illust: dict[str, Any],
     *,
@@ -1402,6 +1437,70 @@ def pixiv(
                 "status": token_res.status_code,
                 "error": token_json,
             }
+
+    if action == "bookmark_metadata_page":
+        bookmark_user_id = params.get("bookmark_user_id")
+        if bookmark_user_id is None:
+            bookmark_user_id = params.get("user_id")
+        if bookmark_user_id is None:
+            bookmark_user_id = current_user_id
+        if bookmark_user_id is None:
+            raise ValueError(
+                "Missing bookmark_user_id/user_id. "
+                "Pass it in params or provide refresh_token so SDK can infer current user."
+            )
+
+        restrict = str(params.get("restrict") or "public").strip().lower()
+        if restrict not in {"public", "private"}:
+            restrict = "public"
+
+        next_url = params.get("next_url")
+        if isinstance(next_url, str) and next_url.strip():
+            request_url = next_url.strip()
+            request_params = None
+        else:
+            request_url = f"{API_BASE}{API_ACTIONS['user_bookmarks_illust']}"
+            request_params = {
+                "user_id": bookmark_user_id,
+                "restrict": restrict,
+            }
+            offset = params.get("offset")
+            if offset is not None:
+                request_params["offset"] = max(0, int(offset))
+            tag = params.get("tag")
+            if isinstance(tag, str) and tag.strip():
+                request_params["tag"] = tag.strip()
+
+        page_res = send("GET", request_url, req_params=request_params, with_auth=True)
+        try:
+            page_data = page_res.json()
+        except Exception:
+            page_data = {"raw": page_res.text}
+
+        illusts = page_data.get("illusts") if isinstance(page_data, dict) else None
+        metadata_items = [
+            _illust_to_metadata_entry(
+                illust,
+                restrict=restrict,
+                quality=str(params.get("quality") or "original"),
+            )
+            for illust in illusts
+            if isinstance(illust, dict)
+        ] if isinstance(illusts, list) else []
+
+        return {
+            "ok": page_res.ok,
+            "action": action,
+            "status": page_res.status_code,
+            "data": {
+                "items": metadata_items,
+                "illusts": illusts if isinstance(illusts, list) else [],
+                "next_url": page_data.get("next_url") if isinstance(page_data, dict) else None,
+            },
+            "error": page_data if not page_res.ok else None,
+            "access_token": access_token,
+            "refresh_token": refresh_token,
+        }
 
     # 2) 收藏随机图（支持 tag / 作者筛选）。
     if action in {"random_bookmark_image", "random_bookmark", "random_bookmark_by_tag"}:

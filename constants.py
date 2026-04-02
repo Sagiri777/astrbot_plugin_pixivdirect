@@ -183,6 +183,10 @@ IDLE_CACHE_INTERVAL_SECONDS: float = 900  # 15 minutes between idle cache runs
 IDLE_CACHE_COUNT: int = 5  # Number of items to cache per user during idle
 DEFAULT_CACHE_SIZE: int = 10  # Default minimum cache size to maintain
 DEFAULT_POOL_KEY: str = "__all__"  # Unified cache pool key per user
+METADATA_WARMUP_INTERVAL_SECONDS: int = 300
+METADATA_WARMUP_PAGE_BATCH: int = 2
+METADATA_WARMUP_ITEM_BATCH: int = 60
+METADATA_CACHE_TTL_HOURS: int = 48
 
 # Unique mode scan settings
 MAX_UNIQUE_SCAN_PAGES: int = 9  # Max pages to scan in unique mode (3+3+3)
@@ -220,6 +224,12 @@ SEARCH_RUNTIME_IP_CANDIDATE_LIMIT: int = 2
 SEARCH_RETRYABLE_FAILURE_BUDGET: int = 3
 SEARCH_PROXY_DAILY_THRESHOLD: int = 3
 SEARCH_PROXY_STICKY_DAYS: int = 3
+RANDOM_SOURCE_IMAGE: str = "image"
+RANDOM_SOURCE_METADATA: str = "metadata"
+RANDOM_SOURCE_OPTIONS: tuple[str, ...] = (
+    RANDOM_SOURCE_IMAGE,
+    RANDOM_SOURCE_METADATA,
+)
 
 # Stage-specific emoji names
 STAGE_EMOJIS: dict[str, list[str]] = {

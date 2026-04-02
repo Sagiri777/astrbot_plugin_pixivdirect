@@ -147,6 +147,58 @@ class CacheManager:
             count += 1
         return count
 
+    def pick_metadata_item(
+        self,
+        user_key: str,
+        *,
+        restrict: str = "public",
+        filter_params: dict[str, Any] | None = None,
+        exclude_sent: bool = False,
+    ) -> dict[str, Any] | None:
+        user_cache = self._config.bookmark_metadata_cache.get(user_key, {})
+        restrict_cache = user_cache.get(str(restrict or "public").strip().lower(), {})
+        if not isinstance(restrict_cache, dict):
+            return None
+
+        sent_ids = (
+            self._config.get_sent_ids_for_user(user_key) if exclude_sent else set()
+        )
+        candidates: list[dict[str, Any]] = []
+        for item in restrict_cache.values():
+            if not isinstance(item, dict):
+                continue
+            illust_id = item.get("illust_id")
+            if (
+                exclude_sent
+                and isinstance(illust_id, int)
+                and illust_id in sent_ids
+            ):
+                continue
+            if filter_params and not self._item_matches_filter(item, filter_params):
+                continue
+            candidates.append(item)
+        if not candidates:
+            return None
+        if self._config.is_unique_enabled_for_user(user_key):
+            return candidates[0]
+        return random.choice(candidates)
+
+    def count_matching_metadata_items(
+        self, user_key: str, *, restrict: str = "public", filter_params: dict[str, Any] | None = None
+    ) -> int:
+        user_cache = self._config.bookmark_metadata_cache.get(user_key, {})
+        restrict_cache = user_cache.get(str(restrict or "public").strip().lower(), {})
+        if not isinstance(restrict_cache, dict):
+            return 0
+        count = 0
+        for item in restrict_cache.values():
+            if not isinstance(item, dict):
+                continue
+            if filter_params and not self._item_matches_filter(item, filter_params):
+                continue
+            count += 1
+        return count
+
     @staticmethod
     def is_r18_item(item: dict[str, Any]) -> bool:
         """Check if a cached item is R-18 content."""
@@ -172,6 +224,8 @@ class CacheManager:
         caption = item.get("caption", "")
         if not isinstance(caption, str):
             caption = ""
+        if not caption:
+            caption = str(item.get("author_name") or "")
 
         item_author_id = item.get("author_id")
 

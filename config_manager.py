@@ -13,6 +13,9 @@ from .constants import (
     BYPASS_MODE_OPTIONS,
     CONFIGURABLE_CONSTANT_ALIASES,
     CONFIGURABLE_CONSTANTS,
+    METADATA_CACHE_TTL_HOURS,
+    RANDOM_SOURCE_METADATA,
+    RANDOM_SOURCE_OPTIONS,
     SEARCH_PROXY_DAILY_THRESHOLD,
     SEARCH_PROXY_STICKY_DAYS,
 )
@@ -45,6 +48,12 @@ class ConfigManager:
         self._bypass_mode_file = plugin_data_dir / "bypass_mode.json"
         self._search_proxy_config_file = plugin_data_dir / "search_proxy_config.json"
         self._search_proxy_state_file = plugin_data_dir / "search_proxy_state.json"
+        self._bookmark_metadata_cache_file = (
+            plugin_data_dir / "bookmark_metadata_cache.json"
+        )
+        self._metadata_warmup_state_file = plugin_data_dir / "metadata_warmup_state.json"
+        self._random_source_mode_file = plugin_data_dir / "random_source_mode.json"
+        self._image_host_config_file = plugin_data_dir / "image_host_config.json"
 
         # Configuration state
         self._storage_lock = asyncio.Lock()
@@ -65,6 +74,22 @@ class ConfigManager:
         self._random_usage_stats: dict[str, dict[str, dict[str, Any]]] = {}
         self._custom_constants: dict[str, Any] = {}
         self._bypass_mode: str = BYPASS_MODE_AUTO
+        self._bookmark_metadata_cache: dict[str, dict[str, dict[str, dict[str, Any]]]] = (
+            {}
+        )
+        self._metadata_warmup_state: dict[str, dict[str, Any]] = {}
+        self._random_source_mode: dict[str, str] = {}
+        self._image_host_config: dict[str, Any] = {
+            "enabled": False,
+            "endpoint": "",
+            "method": "post",
+            "file_field": "file",
+            "headers": {},
+            "form_fields": {},
+            "success_path": "",
+            "delete_path": "",
+            "timeout_seconds": 20,
+        }
         self._search_proxy_config: dict[str, Any] = {
             "enabled": False,
             "proxy_url": "",
@@ -168,6 +193,22 @@ class ConfigManager:
     @property
     def random_usage_stats(self) -> dict[str, dict[str, dict[str, Any]]]:
         return self._random_usage_stats
+
+    @property
+    def bookmark_metadata_cache(self) -> dict[str, dict[str, dict[str, dict[str, Any]]]]:
+        return self._bookmark_metadata_cache
+
+    @property
+    def metadata_warmup_state(self) -> dict[str, dict[str, Any]]:
+        return self._metadata_warmup_state
+
+    @property
+    def random_source_mode(self) -> dict[str, str]:
+        return self._random_source_mode
+
+    @property
+    def image_host_config(self) -> dict[str, Any]:
+        return self._image_host_config
 
     @property
     def bypass_mode(self) -> str:
@@ -411,6 +452,174 @@ class ConfigManager:
         elif proxy_until is not None:
             self._search_proxy_state["proxy_until"] = None
 
+    @staticmethod
+    def _normalize_random_source_mode(value: Any) -> str:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in RANDOM_SOURCE_OPTIONS:
+                return normalized
+        return RANDOM_SOURCE_METADATA
+
+    @classmethod
+    def _normalize_bookmark_metadata_entry(cls, item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+
+        try:
+            illust_id = int(item.get("illust_id"))
+        except (TypeError, ValueError):
+            return None
+
+        image_urls = item.get("image_urls")
+        if not isinstance(image_urls, list):
+            image_urls = []
+        normalized_urls = [
+            str(url).strip()
+            for url in image_urls
+            if isinstance(url, str) and str(url).strip()
+        ]
+
+        caption_seed = item.get("caption_seed")
+        if not isinstance(caption_seed, dict):
+            caption_seed = {}
+
+        cached_at = item.get("cached_at")
+        if not isinstance(cached_at, str) or not cached_at.strip():
+            cached_at = datetime.now().isoformat()
+
+        try:
+            datetime.fromisoformat(cached_at)
+        except ValueError:
+            cached_at = datetime.now().isoformat()
+
+        author_id = item.get("author_id")
+        if isinstance(author_id, str) and author_id.isdigit():
+            author_id = int(author_id)
+        elif not isinstance(author_id, int):
+            author_id = None
+
+        page_count = item.get("page_count")
+        try:
+            page_count = max(1, int(page_count))
+        except (TypeError, ValueError):
+            page_count = 1
+
+        x_restrict = item.get("x_restrict")
+        try:
+            x_restrict = int(x_restrict)
+        except (TypeError, ValueError):
+            x_restrict = 0
+
+        bookmark_restrict = str(item.get("bookmark_restrict") or "public").strip().lower()
+        if bookmark_restrict not in {"public", "private"}:
+            bookmark_restrict = "public"
+
+        return {
+            "illust_id": illust_id,
+            "title": str(item.get("title") or "（无标题）"),
+            "author_id": author_id,
+            "author_name": str(item.get("author_name") or "未知作者"),
+            "tags": [
+                str(tag)
+                for tag in item.get("tags", [])
+                if isinstance(tag, str) and str(tag).strip()
+            ]
+            if isinstance(item.get("tags"), list)
+            else [],
+            "x_restrict": x_restrict,
+            "page_count": page_count,
+            "image_urls": normalized_urls,
+            "caption_seed": caption_seed,
+            "bookmark_restrict": bookmark_restrict,
+            "cached_at": cached_at,
+        }
+
+    @classmethod
+    def _normalize_metadata_warmup_entry(cls, item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+
+        first_login_at = item.get("first_login_at")
+        warmup_until = item.get("warmup_until")
+        if not isinstance(first_login_at, str) or not isinstance(warmup_until, str):
+            return None
+        try:
+            datetime.fromisoformat(first_login_at)
+            datetime.fromisoformat(warmup_until)
+        except ValueError:
+            return None
+
+        next_url = item.get("next_url")
+        if next_url is not None and not isinstance(next_url, str):
+            next_url = None
+
+        try:
+            next_offset = max(0, int(item.get("next_offset", 0)))
+        except (TypeError, ValueError):
+            next_offset = 0
+
+        last_run_at = item.get("last_run_at")
+        if last_run_at is not None and not isinstance(last_run_at, str):
+            last_run_at = None
+
+        return {
+            "first_login_at": first_login_at,
+            "warmup_until": warmup_until,
+            "next_url": next_url or "",
+            "next_offset": next_offset,
+            "last_run_at": last_run_at or "",
+            "completed": bool(item.get("completed")),
+        }
+
+    @classmethod
+    def _normalize_image_host_config(cls, raw: Any) -> dict[str, Any]:
+        config = {
+            "enabled": False,
+            "endpoint": "",
+            "method": "post",
+            "file_field": "file",
+            "headers": {},
+            "form_fields": {},
+            "success_path": "",
+            "delete_path": "",
+            "timeout_seconds": 20,
+        }
+        if not isinstance(raw, dict):
+            return config
+
+        config["enabled"] = bool(raw.get("enabled"))
+        endpoint = raw.get("endpoint")
+        if isinstance(endpoint, str):
+            config["endpoint"] = endpoint.strip()
+
+        method = raw.get("method")
+        if isinstance(method, str) and method.strip().lower() in {"post", "put"}:
+            config["method"] = method.strip().lower()
+
+        file_field = raw.get("file_field")
+        if isinstance(file_field, str) and file_field.strip():
+            config["file_field"] = file_field.strip()
+
+        for key in ("success_path", "delete_path"):
+            value = raw.get(key)
+            if isinstance(value, str):
+                config[key] = value.strip()
+
+        try:
+            config["timeout_seconds"] = max(3, int(raw.get("timeout_seconds", 20)))
+        except (TypeError, ValueError):
+            config["timeout_seconds"] = 20
+
+        for key in ("headers", "form_fields"):
+            value = raw.get(key)
+            if isinstance(value, dict):
+                config[key] = {
+                    str(k): str(v)
+                    for k, v in value.items()
+                    if isinstance(k, str) and str(k).strip()
+                }
+        return config
+
     def _write_json_file(
         self,
         path: Path,
@@ -535,6 +744,10 @@ class ConfigManager:
         """Load all configuration files."""
         self._load_tokens()
         self._load_cache_index()
+        self._load_bookmark_metadata_cache()
+        self._load_metadata_warmup_state()
+        self._load_random_source_mode()
+        self._load_image_host_config()
         self._load_share_config()
         self._load_r18_config()
         self._load_r18_tag_config()
@@ -600,6 +813,132 @@ class ConfigManager:
             if loaded_user_cache:
                 loaded_cache[user_key] = loaded_user_cache
         self._random_cache = loaded_cache
+
+    def _prune_bookmark_metadata_cache(self) -> None:
+        ttl_hours = max(
+            1, int(self.get_constant("metadata_cache_ttl_hours", METADATA_CACHE_TTL_HOURS))
+        )
+        cutoff = datetime.now() - timedelta(hours=ttl_hours)
+        pruned: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
+        for user_key, restrict_map in self._bookmark_metadata_cache.items():
+            if not isinstance(user_key, str) or not isinstance(restrict_map, dict):
+                continue
+            valid_restricts: dict[str, dict[str, dict[str, Any]]] = {}
+            for restrict, entries in restrict_map.items():
+                if not isinstance(restrict, str) or not isinstance(entries, dict):
+                    continue
+                valid_entries: dict[str, dict[str, Any]] = {}
+                for illust_id, item in entries.items():
+                    normalized = self._normalize_bookmark_metadata_entry(item)
+                    if normalized is None:
+                        continue
+                    try:
+                        cached_at = datetime.fromisoformat(normalized["cached_at"])
+                    except ValueError:
+                        continue
+                    if cached_at < cutoff:
+                        continue
+                    valid_entries[str(normalized["illust_id"])] = normalized
+                if valid_entries:
+                    valid_restricts[restrict] = valid_entries
+            if valid_restricts:
+                pruned[user_key] = valid_restricts
+        self._bookmark_metadata_cache = pruned
+
+    def _load_bookmark_metadata_cache(self) -> None:
+        raw = self._load_json_object(
+            self._bookmark_metadata_cache_file,
+            default={},
+            create_log_label="bookmark metadata cache",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load bookmark metadata cache, using empty cache."
+            ),
+        )
+        loaded: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
+        for user_key, restrict_map in raw.items():
+            if not isinstance(user_key, str) or not isinstance(restrict_map, dict):
+                continue
+            valid_restricts: dict[str, dict[str, dict[str, Any]]] = {}
+            for restrict, entries in restrict_map.items():
+                if not isinstance(restrict, str) or not isinstance(entries, dict):
+                    continue
+                valid_entries: dict[str, dict[str, Any]] = {}
+                for illust_id, item in entries.items():
+                    normalized = self._normalize_bookmark_metadata_entry(item)
+                    if normalized is None:
+                        continue
+                    valid_entries[str(normalized["illust_id"])] = normalized
+                if valid_entries:
+                    valid_restricts[restrict] = valid_entries
+            if valid_restricts:
+                loaded[user_key] = valid_restricts
+        self._bookmark_metadata_cache = loaded
+        self._prune_bookmark_metadata_cache()
+
+    def _prune_metadata_warmup_state(self) -> None:
+        now = datetime.now()
+        pruned: dict[str, dict[str, Any]] = {}
+        for user_key, item in self._metadata_warmup_state.items():
+            if not isinstance(user_key, str):
+                continue
+            normalized = self._normalize_metadata_warmup_entry(item)
+            if normalized is None:
+                continue
+            try:
+                warmup_until = datetime.fromisoformat(normalized["warmup_until"])
+            except ValueError:
+                continue
+            if normalized["completed"] and warmup_until < now:
+                continue
+            if warmup_until < now:
+                normalized["completed"] = True
+            pruned[user_key] = normalized
+        self._metadata_warmup_state = pruned
+
+    def _load_metadata_warmup_state(self) -> None:
+        raw = self._load_json_object(
+            self._metadata_warmup_state_file,
+            default={},
+            create_log_label="metadata warmup state",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load metadata warmup state, using empty state."
+            ),
+        )
+        loaded: dict[str, dict[str, Any]] = {}
+        for user_key, item in raw.items():
+            if not isinstance(user_key, str):
+                continue
+            normalized = self._normalize_metadata_warmup_entry(item)
+            if normalized is not None:
+                loaded[user_key] = normalized
+        self._metadata_warmup_state = loaded
+        self._prune_metadata_warmup_state()
+
+    def _load_random_source_mode(self) -> None:
+        raw = self._load_json_object(
+            self._random_source_mode_file,
+            default={},
+            create_log_label="random source mode",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load random source mode, using defaults."
+            ),
+        )
+        loaded: dict[str, str] = {}
+        for key, value in raw.items():
+            if isinstance(key, str) and key:
+                loaded[key] = self._normalize_random_source_mode(value)
+        self._random_source_mode = loaded
+
+    def _load_image_host_config(self) -> None:
+        raw = self._load_json_object(
+            self._image_host_config_file,
+            default=self._normalize_image_host_config({}),
+            create_log_label="image host config",
+            invalid_log_message=(
+                "[pixivdirect] Failed to load image host config, using defaults."
+            ),
+        )
+        self._image_host_config = self._normalize_image_host_config(raw)
 
     def _load_share_config(self) -> None:
         raw = self._load_json_object(
@@ -817,6 +1156,40 @@ class ConfigManager:
         async with self._cache_lock:
             self._write_json_file(
                 self._cache_index_file, self._random_cache, log_label="cache index"
+            )
+
+    async def save_bookmark_metadata_cache(self) -> None:
+        async with self._cache_lock:
+            self._prune_bookmark_metadata_cache()
+            self._write_json_file(
+                self._bookmark_metadata_cache_file,
+                self._bookmark_metadata_cache,
+                log_label="bookmark metadata cache",
+            )
+
+    async def save_metadata_warmup_state(self) -> None:
+        async with self._storage_lock:
+            self._prune_metadata_warmup_state()
+            self._write_json_file(
+                self._metadata_warmup_state_file,
+                self._metadata_warmup_state,
+                log_label="metadata warmup state",
+            )
+
+    async def save_random_source_mode(self) -> None:
+        async with self._storage_lock:
+            self._write_json_file(
+                self._random_source_mode_file,
+                self._random_source_mode,
+                log_label="random source mode",
+            )
+
+    async def save_image_host_config(self) -> None:
+        async with self._storage_lock:
+            self._write_json_file(
+                self._image_host_config_file,
+                self._normalize_image_host_config(self._image_host_config),
+                log_label="image host config",
             )
 
     async def save_tokens(self) -> None:
@@ -1088,6 +1461,52 @@ class ConfigManager:
                 datetime.now() + timedelta(days=sticky_days)
             ).isoformat()
         await self.save_search_proxy_state()
+
+    def init_metadata_warmup_user(self, user_key: str) -> bool:
+        if not user_key or user_key in self._metadata_warmup_state:
+            return False
+        now = datetime.now()
+        self._metadata_warmup_state[user_key] = {
+            "first_login_at": now.isoformat(),
+            "warmup_until": (now + timedelta(days=2)).isoformat(),
+            "next_url": "",
+            "next_offset": 0,
+            "last_run_at": "",
+            "completed": False,
+        }
+        return True
+
+    def get_random_source_mode_for_entity(self, entity_key: str) -> str:
+        return self._normalize_random_source_mode(
+            self._random_source_mode.get(entity_key, RANDOM_SOURCE_METADATA)
+        )
+
+    def set_random_source_mode_for_entity(self, entity_key: str, mode: str) -> None:
+        self._random_source_mode[entity_key] = self._normalize_random_source_mode(mode)
+
+    def upsert_bookmark_metadata(
+        self,
+        *,
+        user_key: str,
+        restrict: str,
+        entries: list[dict[str, Any]],
+    ) -> int:
+        if not user_key:
+            return 0
+        restrict_key = str(restrict or "public").strip().lower() or "public"
+        user_cache = self._bookmark_metadata_cache.setdefault(user_key, {})
+        restrict_cache = user_cache.setdefault(restrict_key, {})
+        inserted = 0
+        now_iso = datetime.now().isoformat()
+        for item in entries:
+            normalized = self._normalize_bookmark_metadata_entry(item)
+            if normalized is None:
+                continue
+            normalized["cached_at"] = now_iso
+            restrict_cache[str(normalized["illust_id"])] = normalized
+            inserted += 1
+        self._prune_bookmark_metadata_cache()
+        return inserted
 
     def get_constant(self, key: str, default: Any = None) -> Any:
         """Get a constant value, checking custom constants first, then defaults."""

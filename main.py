@@ -19,6 +19,7 @@ from .constants import (
     DEFAULT_POOL_KEY,
     IDLE_CACHE_COUNT,
     IDLE_CACHE_INTERVAL_SECONDS,
+    METADATA_WARMUP_INTERVAL_SECONDS,
     MAX_RANDOM_PAGES,
     MIN_COMMAND_INTERVAL_SECONDS,
     SEARCH_CONNECT_TIMEOUT_SECONDS,
@@ -26,12 +27,13 @@ from .constants import (
     SEARCH_RUNTIME_IP_CANDIDATE_LIMIT,
 )
 from .emoji_reaction import EmojiReactionHandler
+from .image_host import ImageHostHandler
 from .image_handler import ImageHandler
 from .pixivSDK import pixiv, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.11.8")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.12.0")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -52,18 +54,21 @@ class PixivDirectPlugin(Star):
         # Idle cache state
         self._idle_cache_task: asyncio.Task | None = None
         self._last_idle_cache_ts: float = 0.0
+        self._metadata_warmup_task: asyncio.Task | None = None
 
         # Initialize image handler with pixiv call function
         self._image_handler = ImageHandler(
             cache_dir=self._config_manager.cache_dir,
             pixiv_call_func=self._pixiv_call,
         )
+        self._image_host_handler = ImageHostHandler()
 
         # Initialize command handler
         self._command_handler = CommandHandler(
             config_manager=self._config_manager,
             cache_manager=self._cache_manager,
             image_handler=self._image_handler,
+            image_host_handler=self._image_host_handler,
             emoji_handler=self._emoji_handler,
             pixiv_call_func=self._pixiv_call,
             min_command_interval=MIN_COMMAND_INTERVAL_SECONDS,
@@ -83,6 +88,7 @@ class PixivDirectPlugin(Star):
         self._dns_refresh_task = asyncio.create_task(self._dns_refresh_loop())
         # Start idle cache task
         self._idle_cache_task = asyncio.create_task(self._idle_cache_loop())
+        self._metadata_warmup_task = asyncio.create_task(self._metadata_warmup_loop())
 
     @staticmethod
     def _next_dns_refresh_time() -> float:
@@ -564,6 +570,50 @@ class PixivDirectPlugin(Star):
                 filter_source,
             )
 
+    async def _metadata_warmup_loop(self) -> None:
+        while True:
+            try:
+                interval = max(
+                    30.0,
+                    float(
+                        self._config_manager.get_constant(
+                            "metadata_warmup_interval",
+                            METADATA_WARMUP_INTERVAL_SECONDS,
+                        )
+                    ),
+                )
+                await asyncio.sleep(interval)
+                await self._perform_metadata_warmup()
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("[pixivdirect] Metadata warmup loop error: %s", exc)
+                await asyncio.sleep(60)
+
+    async def _perform_metadata_warmup(self) -> None:
+        pending_users = [
+            user_key
+            for user_key, item in self._config_manager.metadata_warmup_state.items()
+            if not item.get("completed")
+        ]
+        for user_key in pending_users:
+            refresh_token = self._config_manager.token_map.get(user_key)
+            if not refresh_token:
+                continue
+            latest_refresh_token, _ = await self._command_handler.warmup_metadata_for_user(
+                user_key=user_key,
+                refresh_token=refresh_token,
+                page_batch=int(
+                    self._config_manager.get_constant("metadata_warmup_page_batch", 2)
+                ),
+                item_batch=int(
+                    self._config_manager.get_constant("metadata_warmup_item_batch", 60)
+                ),
+            )
+            if latest_refresh_token != refresh_token:
+                self._config_manager.token_map[user_key] = latest_refresh_token
+                await self._config_manager.save_tokens()
+
     @filter.command("pixiv")
     async def pixiv_command(self, event: AstrMessageEvent, args_str: str = ""):
         """Pixiv commands: help, login, id, random."""
@@ -642,12 +692,17 @@ class PixivDirectPlugin(Star):
                 event, ["proxy", *tokens[1:]]
             ):
                 yield result
+        elif sub_cmd == "imagehost":
+            async for result in self._command_handler.handle_imagehost(
+                event, ["imagehost", *tokens[1:]]
+            ):
+                yield result
         elif sub_cmd == "groupblock":
             async for result in self._command_handler.handle_random(
                 event, ["random", "groupblock", *tokens[1:]]
             ):
                 yield result
-        elif sub_cmd in {"share", "r18", "unique", "quality", "cache"}:
+        elif sub_cmd in {"share", "r18", "unique", "quality", "cache", "source"}:
             async for result in self._command_handler.handle_random(
                 event, ["random", sub_cmd, *tokens[1:]]
             ):
@@ -678,6 +733,12 @@ class PixivDirectPlugin(Star):
             self._idle_cache_task.cancel()
             try:
                 await self._idle_cache_task
+            except asyncio.CancelledError:
+                pass
+        if self._metadata_warmup_task and not self._metadata_warmup_task.done():
+            self._metadata_warmup_task.cancel()
+            try:
+                await self._metadata_warmup_task
             except asyncio.CancelledError:
                 pass
         self._config_manager.random_cache.clear()

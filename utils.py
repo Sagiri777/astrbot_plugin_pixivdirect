@@ -322,6 +322,11 @@ HELP_MENU: list[dict[str, Any]] = [
                 "usage_key": "random",
             },
             {
+                "command": "/pixiv random source [image|metadata]",
+                "description": "查看或切换 random 的读取层级，metadata 模式会按 图片缓存 > 元数据缓存 > 实时随机 执行",
+                "usage_key": "random",
+            },
+            {
                 "command": "筛选参数：tag=xxx&!yyy author=aaa&！bbb author_id=123&!456 restrict=public|private max_pages=3 warmup=2 random=true",
                 "description": "随机收藏支持多正负筛选（tag/author/author_id，支持 ! 和 ！）",
             },
@@ -415,6 +420,11 @@ HELP_MENU: list[dict[str, Any]] = [
                 "description": "管理搜索失败后的代理兜底与粘滞代理窗口",
                 "usage_key": "proxy",
             },
+            {
+                "command": "/pixiv imagehost status/set/enable/header/field/reset",
+                "description": "管理通用 HTTP 图床上传配置",
+                "usage_key": "imagehost",
+            },
         ],
     },
 ]
@@ -428,7 +438,7 @@ def help_text() -> str:
         for item in section["items"]:
             lines.append(f"- {item['command']}  # {item['description']}")
     lines.append(
-        "\n💡 顶级别名：/pixiv share、/pixiv quality、/pixiv cache、/pixiv dns、/pixiv config、/pixiv bypass、/pixiv proxy、/pixiv groupblock"
+        "\n💡 顶级别名：/pixiv share、/pixiv quality、/pixiv cache、/pixiv source、/pixiv dns、/pixiv config、/pixiv bypass、/pixiv proxy、/pixiv imagehost、/pixiv groupblock"
     )
     return "\n".join(lines)
 
@@ -464,6 +474,7 @@ def command_usage(command: str) -> str | None:
         lines.append(
             "- /pixiv random cache add/list/clear/now/nowall/schedule  # 管理随机缓存"
         )
+        lines.append("- /pixiv random source image|metadata  # 切换随机读取模式")
     elif command == "cache":
         lines.append("- /pixiv cache add tag=xxx count=N|always  # 添加缓存任务")
         lines.append("- /pixiv cache list  # 查看缓存任务")
@@ -495,6 +506,14 @@ def command_usage(command: str) -> str | None:
         lines.append("- /pixiv proxy enable true/false  # 启用或禁用搜索代理")
         lines.append("- /pixiv proxy threshold <count>  # 设置每日触发阈值")
         lines.append("- /pixiv proxy sticky <days>  # 设置粘滞代理天数")
+    elif command == "imagehost":
+        lines.append("- /pixiv imagehost status  # 查看图床状态")
+        lines.append("- /pixiv imagehost enable true/false  # 启用或禁用图床")
+        lines.append("- /pixiv imagehost set endpoint <url>  # 设置上传地址")
+        lines.append("- /pixiv imagehost set success_path <json.path>  # 设置返回 URL 路径")
+        lines.append("- /pixiv imagehost header set <key> <value>  # 设置请求头")
+        lines.append("- /pixiv imagehost field set <key> <value>  # 设置表单字段")
+        lines.append("- /pixiv imagehost reset  # 重置图床配置")
     elif command == "r18":
         lines.append("- /pixiv r18 true/false  # 群聊中控制是否发送 R-18 图片")
         lines.append("- /pixiv r18 tag true/false  # 群聊中控制是否显示标签")

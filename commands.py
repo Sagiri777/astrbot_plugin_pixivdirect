@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime
 from typing import Any
 
 from astrbot.api import logger
@@ -20,6 +21,8 @@ from .constants import (
     MAX_RANDOM_WARMUP,
     MAX_UNIQUE_SCAN_PAGES,
     MULTI_IMAGE_THRESHOLD,
+    RANDOM_SOURCE_IMAGE,
+    RANDOM_SOURCE_METADATA,
     RANDOM_DOWNLOAD_CONCURRENCY,
     SEARCH_DEFAULT_LIMIT,
     SEARCH_DURATION_OPTIONS,
@@ -29,6 +32,7 @@ from .constants import (
     SEARCH_USER_SORT_OPTIONS,
 )
 from .emoji_reaction import EmojiReactionHandler
+from .image_host import ImageHostHandler
 from .image_handler import ImageHandler
 from .utils import (
     format_author_detail,
@@ -51,6 +55,7 @@ class CommandHandler:
         config_manager: ConfigManager,
         cache_manager: CacheManager,
         image_handler: ImageHandler,
+        image_host_handler: ImageHostHandler,
         emoji_handler: EmojiReactionHandler,
         pixiv_call_func,
         min_command_interval: float,
@@ -64,6 +69,7 @@ class CommandHandler:
         self._config = config_manager
         self._cache = cache_manager
         self._image = image_handler
+        self._image_host = image_host_handler
         self._emoji = emoji_handler
         self._pixiv_call = pixiv_call_func
         self._min_command_interval = min_command_interval
@@ -354,6 +360,107 @@ class CommandHandler:
             return f"{remain_total}张 (匹配当前筛选: {remain_matching}张)"
         return f"{remain_total}张 (全部)"
 
+    @staticmethod
+    def _entity_key_for_event(event: AstrMessageEvent) -> str:
+        group_id = event.get_group_id()
+        return f"group:{group_id}" if group_id else f"user:{user_key(event)}"
+
+    def _get_random_source_mode(self, event: AstrMessageEvent) -> str:
+        return self._config.get_random_source_mode_for_entity(
+            self._entity_key_for_event(event)
+        )
+
+    @staticmethod
+    def _metadata_to_random_item(metadata_item: dict[str, Any]) -> dict[str, Any]:
+        caption_seed = (
+            metadata_item.get("caption_seed")
+            if isinstance(metadata_item.get("caption_seed"), dict)
+            else {}
+        )
+        return {
+            "illust_id": metadata_item.get("illust_id"),
+            "title": metadata_item.get("title"),
+            "author_name": metadata_item.get("author_name"),
+            "author_id": metadata_item.get("author_id"),
+            "tags": metadata_item.get("tags", []),
+            "page_count": metadata_item.get("page_count", 1),
+            "x_restrict": metadata_item.get("x_restrict", 0),
+            "total_view": caption_seed.get("total_view"),
+            "total_bookmarks": caption_seed.get("total_bookmarks"),
+        }
+
+    async def warmup_metadata_for_user(
+        self,
+        *,
+        user_key: str,
+        refresh_token: str,
+        page_batch: int,
+        item_batch: int,
+    ) -> tuple[str, int]:
+        state = self._config.metadata_warmup_state.get(user_key)
+        if not isinstance(state, dict) or state.get("completed"):
+            return refresh_token, 0
+
+        warmup_until = state.get("warmup_until")
+        if isinstance(warmup_until, str):
+            try:
+                if datetime.fromisoformat(warmup_until) <= datetime.now():
+                    state["completed"] = True
+                    await self._config.save_metadata_warmup_state()
+                    return refresh_token, 0
+            except ValueError:
+                state["completed"] = True
+                await self._config.save_metadata_warmup_state()
+                return refresh_token, 0
+
+        latest_refresh_token = refresh_token
+        inserted_total = 0
+        next_url = str(state.get("next_url") or "")
+        next_offset = int(state.get("next_offset", 0) or 0)
+
+        for _ in range(max(1, page_batch)):
+            result = await self._pixiv_call(
+                "bookmark_metadata_page",
+                {
+                    "restrict": "public",
+                    "next_url": next_url,
+                    "offset": next_offset,
+                    "quality": "original",
+                },
+                refresh_token=latest_refresh_token,
+            )
+            if not result.get("ok"):
+                break
+
+            latest_refresh_token = str(result.get("refresh_token") or latest_refresh_token)
+            data = result.get("data")
+            if not isinstance(data, dict):
+                break
+            items = data.get("items") if isinstance(data.get("items"), list) else []
+            if items:
+                remaining_capacity = max(0, item_batch - inserted_total)
+                subset = items[:remaining_capacity] if remaining_capacity else []
+                inserted_total += self._config.upsert_bookmark_metadata(
+                    user_key=user_key,
+                    restrict="public",
+                    entries=subset,
+                )
+            next_url = str(data.get("next_url") or "")
+            next_offset += len(items)
+            if not next_url or inserted_total >= item_batch:
+                break
+
+        state["next_url"] = next_url
+        state["next_offset"] = next_offset
+        state["last_run_at"] = datetime.now().isoformat()
+        if not next_url:
+            state["completed"] = True
+
+        if inserted_total > 0:
+            await self._config.save_bookmark_metadata_cache()
+        await self._config.save_metadata_warmup_state()
+        return latest_refresh_token, inserted_total
+
     async def _emit_random_item(
         self,
         event: AstrMessageEvent,
@@ -430,6 +537,59 @@ class CommandHandler:
             exclude_sent=unique_enabled,
         )
 
+    async def _materialize_metadata_item(
+        self,
+        metadata_item: dict[str, Any],
+        *,
+        owner_user_key: str,
+        refresh_token: str,
+    ) -> dict[str, Any] | None:
+        illust_id = metadata_item.get("illust_id")
+        if isinstance(illust_id, int):
+            cached_item = self._cache.find_cached_by_illust_id(illust_id)
+            if cached_item:
+                return cached_item
+
+        image_urls = (
+            metadata_item.get("image_urls")
+            if isinstance(metadata_item.get("image_urls"), list)
+            else []
+        )
+        if not image_urls:
+            return None
+
+        primary_path = await self._image.download_image_to_cache(
+            str(image_urls[0]),
+            access_token=None,
+            refresh_token=refresh_token,
+            name_prefix=f"metadata_{illust_id or 'unknown'}",
+        )
+        extra_image_paths: list[str] = []
+        for index, image_url in enumerate(image_urls[1 : self._get_multi_image_threshold()], start=1):
+            extra_image_paths.append(
+                await self._image.download_image_to_cache(
+                    str(image_url),
+                    access_token=None,
+                    refresh_token=refresh_token,
+                    name_prefix=f"metadata_{illust_id or 'unknown'}_{index}",
+                )
+            )
+
+        item = self._build_cache_item(
+            path=primary_path,
+            caption=format_random_bookmark(self._metadata_to_random_item(metadata_item)),
+            x_restrict=metadata_item.get("x_restrict"),
+            tags=metadata_item.get("tags", []),
+            illust_id=illust_id if isinstance(illust_id, int) else None,
+            author_id=metadata_item.get("author_id"),
+            author_name=str(metadata_item.get("author_name") or ""),
+            page_count=metadata_item.get("page_count", 1),
+            extra_image_paths=extra_image_paths,
+        )
+        if owner_user_key:
+            await self._append_cache_item(owner_user_key, item)
+        return item
+
     async def _fill_random_cache(
         self,
         *,
@@ -453,6 +613,51 @@ class CommandHandler:
             thorough_random=thorough_random,
             quality=quality,
         )
+
+    async def _pick_from_metadata_cache(
+        self,
+        *,
+        owner_user_key: str,
+        filter_params: dict[str, Any],
+        refresh_token: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        metadata_item = self._cache.pick_metadata_item(
+            owner_user_key,
+            restrict=str(filter_params.get("restrict", "public")),
+            filter_params=filter_params,
+            exclude_sent=self._config.is_unique_enabled_for_user(owner_user_key),
+        )
+        if metadata_item:
+            materialized = await self._materialize_metadata_item(
+                metadata_item,
+                owner_user_key=owner_user_key,
+                refresh_token=refresh_token,
+            )
+            return materialized, refresh_token
+
+        latest_refresh_token, inserted = await self.warmup_metadata_for_user(
+            user_key=owner_user_key,
+            refresh_token=refresh_token,
+            page_batch=1,
+            item_batch=max(1, self._parse_warmup_count(dict(filter_params))),
+        )
+        if inserted <= 0:
+            return None, latest_refresh_token
+
+        metadata_item = self._cache.pick_metadata_item(
+            owner_user_key,
+            restrict=str(filter_params.get("restrict", "public")),
+            filter_params=filter_params,
+            exclude_sent=self._config.is_unique_enabled_for_user(owner_user_key),
+        )
+        if not metadata_item:
+            return None, latest_refresh_token
+        materialized = await self._materialize_metadata_item(
+            metadata_item,
+            owner_user_key=owner_user_key,
+            refresh_token=latest_refresh_token,
+        )
+        return materialized, latest_refresh_token
 
     async def _cache_illust_result(
         self,
@@ -791,6 +996,12 @@ class CommandHandler:
             image_path=prepared_path,
             extra=f"apply_event_restrictions={apply_event_restrictions}",
         )
+        image_host_url = await self._image_host.upload_image(
+            prepared_path,
+            self._config.image_host_config,
+        )
+        if image_host_url:
+            formatted_text = f"{formatted_text}\n🔗 图床链接: {image_host_url}"
         if event.get_platform_name() == "aiocqhttp":
             return [
                 event.plain_result(formatted_text),
@@ -952,6 +1163,8 @@ class CommandHandler:
 
         latest_refresh_token = str(verify_result.get("refresh_token") or refresh_token)
         await self.set_user_token(event, latest_refresh_token)
+        if self._config.init_metadata_warmup_user(user_key(event)):
+            await self._config.save_metadata_warmup_state()
         yield event.plain_result("✅ 已绑定当前用户的 Pixiv Token。")
 
     async def handle_id(self, event: AstrMessageEvent, args: list[str]):
@@ -1396,6 +1609,30 @@ class CommandHandler:
                     f"- 使用 /pixiv dns refresh 手动触发刷新"
                 )
                 return
+
+        if len(args) >= 2 and args[1].lower() == "source":
+            entity_key = self._entity_key_for_event(event)
+            if len(args) >= 3:
+                if not event.is_admin():
+                    yield event.plain_result("❌ 仅 AstrBot 管理员可修改 random 读取模式。")
+                    return
+                mode = args[2].strip().lower()
+                if mode not in {RANDOM_SOURCE_IMAGE, RANDOM_SOURCE_METADATA}:
+                    yield event.plain_result("❌ 无效模式，请使用 image 或 metadata。")
+                    return
+                self._config.set_random_source_mode_for_entity(entity_key, mode)
+                await self._config.save_random_source_mode()
+                yield event.plain_result(
+                    f"✅ 已设置当前上下文 random 读取模式为：{mode}"
+                )
+                return
+
+            yield event.plain_result(
+                "ℹ️ 当前 random 读取模式："
+                f"{self._config.get_random_source_mode_for_entity(entity_key)}\n"
+                "metadata 模式下会按 本地图片缓存 > 元数据缓存 > 实时随机 的顺序获取。"
+            )
+            return
 
         # Handle r18 config
         if len(args) >= 2 and args[1].lower() == "r18":
@@ -1984,6 +2221,7 @@ class CommandHandler:
         filter_params.setdefault("restrict", "public")
         filter_params.setdefault("max_pages", 3)
         cache_key = self._cache.cache_key(filter_params)
+        source_mode = self._get_random_source_mode(event)
         logger.info(
             f"[pixivdirect] Continuing with random bookmark, filter_params: {filter_params}"
         )
@@ -2007,56 +2245,73 @@ class CommandHandler:
                 ):
                     yield result
                 return
-            else:
-                # Cache empty, try to fetch new data using target user's token
-                target_user_token = self._config.token_map.get(target_user_key)
-                if not target_user_token:
-                    yield event.plain_result("❌ 该用户未登录 Pixiv。")
-                    return
+            target_user_token = self._config.token_map.get(target_user_key)
+            if not target_user_token:
+                yield event.plain_result("❌ 该用户未登录 Pixiv。")
+                return
 
-                await self._record_random_usage(
-                    owner_user_key=target_user_key, filter_params=filter_params
-                )
-                warmup = self._parse_warmup_count(filter_params)
-
-                await self._emoji.add_emoji_reaction(event, "random")
-                latest_refresh_token, error = await self._fill_random_cache(
-                    user_id=target_user_key,
-                    refresh_token=target_user_token,
-                    cache_key=cache_key,
+            if source_mode == RANDOM_SOURCE_METADATA:
+                metadata_item, latest_refresh_token = await self._pick_from_metadata_cache(
+                    owner_user_key=target_user_key,
                     filter_params=filter_params,
-                    count=warmup,
-                    thorough_random=thorough_random,
-                    quality=self._get_quality_for_event(event),
+                    refresh_token=target_user_token,
                 )
                 if latest_refresh_token != target_user_token:
                     self._config.token_map[target_user_key] = latest_refresh_token
                     await self._config.save_tokens()
-
-                if error:
-                    await self._emoji.add_emoji_reaction(event, "error")
-                    yield event.plain_result(f"❌ 获取随机收藏失败：{error}")
+                    target_user_token = latest_refresh_token
+                if metadata_item:
+                    async for result in self._emit_random_item(
+                        event,
+                        metadata_item,
+                        fallback_caption="Pixiv 随机收藏（元数据）",
+                        source_label="元数据缓存（共享）",
+                    ):
+                        yield result
                     return
 
-                # Try to get item from cache again
-                cached_item = await self._pop_random_cached_item(
-                    target_user_key,
-                    cache_key,
-                    filter_params,
-                )
-                if not cached_item:
-                    yield event.plain_result("❌ 未找到可发送的缓存图片。")
-                    return
+            await self._record_random_usage(
+                owner_user_key=target_user_key, filter_params=filter_params
+            )
+            warmup = self._parse_warmup_count(filter_params)
 
-                await self._emoji.add_emoji_reaction(event, "random")
-                async for result in self._emit_random_item(
-                    event,
-                    cached_item,
-                    fallback_caption="Pixiv 随机收藏（共享）",
-                    source_label="新获取（共享）",
-                ):
-                    yield result
+            await self._emoji.add_emoji_reaction(event, "random")
+            latest_refresh_token, error = await self._fill_random_cache(
+                user_id=target_user_key,
+                refresh_token=target_user_token,
+                cache_key=cache_key,
+                filter_params=filter_params,
+                count=warmup,
+                thorough_random=thorough_random,
+                quality=self._get_quality_for_event(event),
+            )
+            if latest_refresh_token != target_user_token:
+                self._config.token_map[target_user_key] = latest_refresh_token
+                await self._config.save_tokens()
+
+            if error:
+                await self._emoji.add_emoji_reaction(event, "error")
+                yield event.plain_result(f"❌ 获取随机收藏失败：{error}")
                 return
+
+            cached_item = await self._pop_random_cached_item(
+                target_user_key,
+                cache_key,
+                filter_params,
+            )
+            if not cached_item:
+                yield event.plain_result("❌ 未找到可发送的缓存图片。")
+                return
+
+            await self._emoji.add_emoji_reaction(event, "random")
+            async for result in self._emit_random_item(
+                event,
+                cached_item,
+                fallback_caption="Pixiv 随机收藏（共享）",
+                source_label="新获取（共享）",
+            ):
+                yield result
+            return
 
         # Self cache mode - requires token
         user_token = self.get_user_token(event)
@@ -2084,6 +2339,29 @@ class CommandHandler:
             ):
                 yield result
             return
+
+        if source_mode == RANDOM_SOURCE_METADATA:
+            metadata_item, latest_refresh_token = await self._pick_from_metadata_cache(
+                owner_user_key=key,
+                filter_params=filter_params,
+                refresh_token=user_token,
+            )
+            if latest_refresh_token != user_token:
+                await self.set_user_token(event, latest_refresh_token)
+                user_token = latest_refresh_token
+            if metadata_item:
+                sent_ids_changed = self._mark_sent_illust_if_needed(key, metadata_item)
+                if sent_ids_changed:
+                    await self._config.save_sent_illust_ids()
+                async for result in self._emit_random_item(
+                    event,
+                    metadata_item,
+                    fallback_caption="Pixiv 随机收藏（元数据）",
+                    source_label="元数据缓存",
+                    remain_text=self._build_remaining_cache_text(key, filter_params),
+                ):
+                    yield result
+                return
 
         # Cache empty, fetch new data
         warmup = self._parse_warmup_count(filter_params)
@@ -2250,6 +2528,22 @@ class CommandHandler:
         semaphore = asyncio.Semaphore(self._get_random_download_concurrency())
 
         async def build_cache_item(item: dict[str, Any]) -> dict[str, Any]:
+            cached_item = None
+            if isinstance(item.get("illust_id"), int):
+                cached_item = self._cache.find_cached_by_illust_id(int(item["illust_id"]))
+            if cached_item:
+                return {
+                    **cached_item,
+                    "caption": format_random_bookmark(
+                        item,
+                        matched_count=item.get("matched_count"),
+                        pages_scanned=item.get("pages_scanned"),
+                    ),
+                    "title": str(item.get("title") or "（无标题）"),
+                    "total_view": item.get("total_view"),
+                    "total_bookmarks": item.get("total_bookmarks"),
+                }
+
             image_urls = (
                 _pick_illust_image_urls(item.get("illust", {}), quality)
                 if isinstance(item.get("illust"), dict)
@@ -2510,6 +2804,100 @@ class CommandHandler:
             "- /pixiv proxy enable true|false\n"
             "- /pixiv proxy threshold <count>\n"
             "- /pixiv proxy sticky <days>"
+        )
+
+    async def handle_imagehost(self, event: AstrMessageEvent, args: list[str]):
+        if not event.is_admin():
+            yield event.plain_result("❌ 仅 AstrBot 管理员可查看或修改图床配置。")
+            return
+
+        config = self._config.image_host_config
+        subcommand = args[1].lower() if len(args) >= 2 else "status"
+
+        if subcommand == "status":
+            yield event.plain_result(
+                "ℹ️ 图床状态：\n"
+                f"- 启用: {bool(config.get('enabled'))}\n"
+                f"- endpoint: {config.get('endpoint') or '未配置'}\n"
+                f"- method: {config.get('method')}\n"
+                f"- file_field: {config.get('file_field')}\n"
+                f"- success_path: {config.get('success_path') or '未配置'}\n"
+                f"- headers: {len(config.get('headers', {}))}项\n"
+                f"- form_fields: {len(config.get('form_fields', {}))}项\n"
+                f"- timeout_seconds: {config.get('timeout_seconds')}"
+            )
+            return
+
+        if subcommand == "enable" and len(args) >= 3:
+            enabled = self._parse_bool_value(args[2])
+            if enabled is None:
+                yield event.plain_result("❌ 无效的值，请使用 true 或 false。")
+                return
+            config["enabled"] = enabled
+            await self._config.save_image_host_config()
+            yield event.plain_result(f"✅ 图床已{'开启' if enabled else '关闭'}。")
+            return
+
+        if subcommand == "set" and len(args) >= 4:
+            key = args[2].lower()
+            value = " ".join(args[3:]).strip()
+            if key not in {"endpoint", "method", "file_field", "success_path", "delete_path", "timeout_seconds"}:
+                yield event.plain_result("❌ 仅支持设置 endpoint/method/file_field/success_path/delete_path/timeout_seconds。")
+                return
+            if key == "method":
+                value = value.lower()
+                if value not in {"post", "put"}:
+                    yield event.plain_result("❌ method 仅支持 post 或 put。")
+                    return
+                config[key] = value
+            elif key == "timeout_seconds":
+                try:
+                    config[key] = max(3, int(value))
+                except ValueError:
+                    yield event.plain_result("❌ timeout_seconds 必须是整数。")
+                    return
+            else:
+                config[key] = value
+            await self._config.save_image_host_config()
+            yield event.plain_result(f"✅ 已设置图床配置 {key}。")
+            return
+
+        if subcommand in {"header", "field"} and len(args) >= 4:
+            target_key = "headers" if subcommand == "header" else "form_fields"
+            action = args[2].lower()
+            if action == "set" and len(args) >= 5:
+                config[target_key][args[3]] = " ".join(args[4:]).strip()
+                await self._config.save_image_host_config()
+                yield event.plain_result(f"✅ 已设置图床{target_key}项：{args[3]}")
+                return
+            if action == "remove":
+                config[target_key].pop(args[3], None)
+                await self._config.save_image_host_config()
+                yield event.plain_result(f"✅ 已移除图床{target_key}项：{args[3]}")
+                return
+
+        if subcommand == "reset":
+            self._config.image_host_config.clear()
+            self._config.image_host_config.update(
+                self._config._normalize_image_host_config({})
+            )
+            await self._config.save_image_host_config()
+            yield event.plain_result("✅ 已重置图床配置。")
+            return
+
+        yield event.plain_result(
+            "📋 用法：\n"
+            "- /pixiv imagehost status\n"
+            "- /pixiv imagehost enable true|false\n"
+            "- /pixiv imagehost set endpoint <url>\n"
+            "- /pixiv imagehost set method post|put\n"
+            "- /pixiv imagehost set file_field <name>\n"
+            "- /pixiv imagehost set success_path <json.path>\n"
+            "- /pixiv imagehost header set <key> <value>\n"
+            "- /pixiv imagehost field set <key> <value>\n"
+            "- /pixiv imagehost header remove <key>\n"
+            "- /pixiv imagehost field remove <key>\n"
+            "- /pixiv imagehost reset"
         )
 
     async def handle_search(self, event: AstrMessageEvent, args: list[str]):
