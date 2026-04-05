@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [3.0.1] - 2026-04-05
+
+### Fixed
+- 修复 `PixivDirectPlugin._pixiv_call()` 透传 `bypass_mode` 时，`PixivClientFacade.call_action()` 因未兼容历史关键字参数而直接抛出 `unexpected keyword argument 'bypass_mode'` 的问题
+- `PixivClientFacade` 现会兼容旧的 `bypass_mode` 调用方式，并继续将 `auto` / `accesser` 归一为 `pixez`，避免插件主流程和调试脚本再次因签名回归报错
+
 ## [3.0.0] - 2026-04-05
 
 ### Added

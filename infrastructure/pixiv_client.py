@@ -247,10 +247,14 @@ def _resolve_host_ips(
     max_doh_servers: int | None = None,
 ) -> list[str]:
     del session, proxies, max_doh_servers
-    return _resolve_a_records_via_dns_server(host, dns_server=doh_server, timeout=timeout)
+    return _resolve_a_records_via_dns_server(
+        host, dns_server=doh_server, timeout=timeout
+    )
 
 
-def _rank_ips_by_latency(ips: list[str], *, timeout: float) -> tuple[list[str], dict[str, float]]:
+def _rank_ips_by_latency(
+    ips: list[str], *, timeout: float
+) -> tuple[list[str], dict[str, float]]:
     del timeout
     return ips, {}
 
@@ -339,7 +343,9 @@ def _refresh_pixez_hosts_via_dns(
     del session, proxies
     refreshed = dict(base_map)
     for host in base_map:
-        ips = _resolve_a_records_via_dns_server(host, dns_server=doh_server, timeout=timeout)
+        ips = _resolve_a_records_via_dns_server(
+            host, dns_server=doh_server, timeout=timeout
+        )
         if ips:
             refreshed[host] = ips[0]
     return refreshed
@@ -389,12 +395,16 @@ def _read_refresh_token_file(path: str = ".pixiv_refresh_token") -> str | None:
         return None
 
 
-def pick_illust_image_url(illust: dict[str, Any], quality: str = "original") -> str | None:
+def pick_illust_image_url(
+    illust: dict[str, Any], quality: str = "original"
+) -> str | None:
     urls = pick_illust_image_urls(illust, quality)
     return urls[0] if urls else None
 
 
-def pick_illust_image_urls(illust: dict[str, Any], quality: str = "original") -> list[str]:
+def pick_illust_image_urls(
+    illust: dict[str, Any], quality: str = "original"
+) -> list[str]:
     quality_keys = {
         "original": ("original", "large", "medium", "square_medium"),
         "medium": ("large", "medium", "original", "square_medium"),
@@ -422,11 +432,21 @@ def pick_illust_image_urls(illust: dict[str, Any], quality: str = "original") ->
             if isinstance(original, str) and original:
                 if quality == "small":
                     image_urls = illust.get("image_urls")
-                    square = image_urls.get("square_medium") if isinstance(image_urls, dict) else None
-                    urls.append(square if isinstance(square, str) and square else original)
+                    square = (
+                        image_urls.get("square_medium")
+                        if isinstance(image_urls, dict)
+                        else None
+                    )
+                    urls.append(
+                        square if isinstance(square, str) and square else original
+                    )
                 elif quality == "medium":
                     image_urls = illust.get("image_urls")
-                    large = image_urls.get("large") if isinstance(image_urls, dict) else None
+                    large = (
+                        image_urls.get("large")
+                        if isinstance(image_urls, dict)
+                        else None
+                    )
                     urls.append(large if isinstance(large, str) and large else original)
                 else:
                     urls.append(original)
@@ -514,7 +534,9 @@ def _match_illust_tag(illust: dict[str, Any], tag: str | None) -> bool:
 
 def _normalize_web_illust_item(item: dict[str, Any]) -> dict[str, Any]:
     preview_url = None
-    image_urls = item.get("image_urls") if isinstance(item.get("image_urls"), dict) else {}
+    image_urls = (
+        item.get("image_urls") if isinstance(item.get("image_urls"), dict) else {}
+    )
     urls = item.get("urls") if isinstance(item.get("urls"), dict) else {}
     for candidate in (
         image_urls.get("large"),
@@ -552,7 +574,9 @@ def _normalize_web_user_preview(item: dict[str, Any]) -> dict[str, Any]:
             "name": item.get("userName") or item.get("user_name") or "未知",
             "account": item.get("userAccount") or item.get("account") or "",
             "profile": {
-                "total_illusts": item.get("illustsTotal") or item.get("illust_total") or 0,
+                "total_illusts": item.get("illustsTotal")
+                or item.get("illust_total")
+                or 0,
                 "total_manga": item.get("mangaTotal") or item.get("manga_total") or 0,
             },
         },
@@ -590,7 +614,9 @@ def _patched_dns_resolution(host_map: dict[str, str]):
             dns_map = getattr(_thread_local, "_dns_normalized", {})
             ip = dns_map.get(key)
             if ip:
-                original = getattr(_thread_local, "_original_getaddrinfo", original_getaddrinfo)
+                original = getattr(
+                    _thread_local, "_original_getaddrinfo", original_getaddrinfo
+                )
                 return original(ip, *args, **kwargs)
         return original_getaddrinfo(host, *args, **kwargs)
 
@@ -621,8 +647,12 @@ def _get_session() -> requests.Session:
         with _session_lock:
             if _global_session is None:
                 session = requests.Session()
-                https_adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=3)
-                http_adapter = HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=3)
+                https_adapter = HTTPAdapter(
+                    pool_connections=10, pool_maxsize=20, max_retries=3
+                )
+                http_adapter = HTTPAdapter(
+                    pool_connections=10, pool_maxsize=20, max_retries=3
+                )
                 session.mount("https://", https_adapter)
                 session.mount("http://", http_adapter)
                 _global_session = session
@@ -678,7 +708,9 @@ class PixivTransport:
                 proxy=proxy,
             )
 
-        retryable_statuses = {403} if action in {"search_illust", "search_user"} else set()
+        retryable_statuses = (
+            {403} if action in {"search_illust", "search_user"} else set()
+        )
         runtime_ip_candidate_limit = (
             max(1, int(search_runtime_ip_candidate_limit))
             if runtime_dns_resolve and search_runtime_ip_candidate_limit is not None
@@ -707,7 +739,10 @@ class PixivTransport:
             merged_headers["Referer"] = IMAGE_REFERER
         elif is_web_request:
             merged_headers.setdefault("Accept", "application/json, text/plain, */*")
-        if not image_mode and req_host in {"app-api.pixiv.net", "oauth.secure.pixiv.net"}:
+        if not image_mode and req_host in {
+            "app-api.pixiv.net",
+            "oauth.secure.pixiv.net",
+        }:
             now = _pixiv_client_time()
             merged_headers.setdefault("X-Client-Time", now)
             merged_headers.setdefault(
@@ -717,7 +752,9 @@ class PixivTransport:
             merged_headers.setdefault("App-OS", "Android")
             merged_headers.setdefault(
                 "App-OS-Version",
-                PIXIV_OAUTH_OS_VERSION if req_host == "oauth.secure.pixiv.net" else PIXIV_API_OS_VERSION,
+                PIXIV_OAUTH_OS_VERSION
+                if req_host == "oauth.secure.pixiv.net"
+                else PIXIV_API_OS_VERSION,
             )
             merged_headers.setdefault("App-Version", PIXIV_APP_VERSION)
             if req_host == "app-api.pixiv.net":
@@ -734,7 +771,15 @@ class PixivTransport:
 
         def _url_with_host(host: str) -> str:
             netloc = host if not req_split.port else f"{host}:{req_split.port}"
-            return urlunsplit((req_split.scheme, netloc, req_split.path, req_split.query, req_split.fragment))
+            return urlunsplit(
+                (
+                    req_split.scheme,
+                    netloc,
+                    req_split.path,
+                    req_split.query,
+                    req_split.fragment,
+                )
+            )
 
         def _do_request(
             target_url: str | None = None,
@@ -784,7 +829,10 @@ class PixivTransport:
             session=session,
             proxies=proxies,
         )
-        if runtime_ip_candidate_limit is not None and len(ip_candidates) > runtime_ip_candidate_limit:
+        if (
+            runtime_ip_candidate_limit is not None
+            and len(ip_candidates) > runtime_ip_candidate_limit
+        ):
             ip_candidates = ip_candidates[:runtime_ip_candidate_limit]
 
         failure_budget_used = 0
@@ -792,24 +840,37 @@ class PixivTransport:
         last_exc: Exception | None = None
         for ip in ip_candidates:
             try:
-                res = _do_request(dns_override={req_host: ip}, verify=False, disable_sni=True)
+                res = _do_request(
+                    dns_override={req_host: ip}, verify=False, disable_sni=True
+                )
                 last_res = res
                 if res.ok:
                     return res
                 if runtime_dns_resolve and res.status_code in retryable_statuses:
                     failure_budget_used += 1
-                    if retryable_failure_budget and failure_budget_used >= retryable_failure_budget:
+                    if (
+                        retryable_failure_budget
+                        and failure_budget_used >= retryable_failure_budget
+                    ):
                         break
                     continue
                 return res
             except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
                 last_exc = exc
                 failure_budget_used += 1
-                if retryable_failure_budget and failure_budget_used >= retryable_failure_budget:
+                if (
+                    retryable_failure_budget
+                    and failure_budget_used >= retryable_failure_budget
+                ):
                     break
 
         alias_host = HOST_ALIAS_MAP.get(req_host)
-        if alias_host and runtime_dns_resolve and last_res is not None and last_res.status_code in retryable_statuses:
+        if (
+            alias_host
+            and runtime_dns_resolve
+            and last_res is not None
+            and last_res.status_code in retryable_statuses
+        ):
             try:
                 return _do_request(target_url=_url_with_host(alias_host))
             except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
@@ -836,9 +897,15 @@ class PixivAuthClient:
         dns_cache_file: str = ".pixiv_host_map.json",
         bypass_sni: bool = True,
     ) -> dict[str, Any]:
-        refresh_token = refresh_token or os.getenv("PIXIV_REFRESH_TOKEN") or _read_refresh_token_file()
+        refresh_token = (
+            refresh_token
+            or os.getenv("PIXIV_REFRESH_TOKEN")
+            or _read_refresh_token_file()
+        )
         if not refresh_token:
-            raise ValueError("Missing refresh_token. Pass it or set PIXIV_REFRESH_TOKEN.")
+            raise ValueError(
+                "Missing refresh_token. Pass it or set PIXIV_REFRESH_TOKEN."
+            )
         res = self._transport.send(
             "POST",
             OAUTH_URL,
@@ -871,7 +938,9 @@ class PixivApiClient:
         self._facade = facade
 
     def get_illust_detail(self, illust_id: int, **kwargs: Any) -> dict[str, Any]:
-        return self._facade.call_action("illust_detail", {"illust_id": illust_id}, **kwargs)
+        return self._facade.call_action(
+            "illust_detail", {"illust_id": illust_id}, **kwargs
+        )
 
     def get_user_detail(self, user_id: int, **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("user_detail", {"user_id": user_id}, **kwargs)
@@ -882,7 +951,9 @@ class PixivApiClient:
     def search_users(self, params: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("search_user", params, **kwargs)
 
-    def get_bookmark_metadata_page(self, params: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+    def get_bookmark_metadata_page(
+        self, params: dict[str, Any], **kwargs: Any
+    ) -> dict[str, Any]:
         return self._facade.call_action("bookmark_metadata_page", params, **kwargs)
 
 
@@ -894,7 +965,9 @@ class PixivImageClient:
         return self._facade.call_action("image", {"url": url}, **kwargs)
 
     def get_ugoira_metadata(self, illust_id: int, **kwargs: Any) -> dict[str, Any]:
-        return self._facade.call_action("ugoira_metadata", {"illust_id": illust_id}, **kwargs)
+        return self._facade.call_action(
+            "ugoira_metadata", {"illust_id": illust_id}, **kwargs
+        )
 
     def download_ugoira_zip(self, url: str, **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("ugoira_zip", {"url": url}, **kwargs)
@@ -903,6 +976,15 @@ class PixivImageClient:
 class PixivDnsResolver:
     def refresh_host_map(self, **kwargs: Any) -> dict[str, str]:
         return refresh_pixiv_host_map(**kwargs)
+
+
+def _normalize_bypass_mode(mode: str | None) -> str:
+    normalized = str(mode or "pixez").strip().lower()
+    if normalized in {"auto", "accesser"}:
+        return "pixez"
+    if normalized == "disabled":
+        return "disabled"
+    return "pixez"
 
 
 class PixivClientFacade:
@@ -920,6 +1002,7 @@ class PixivClientFacade:
         *,
         refresh_token: str | None = None,
         access_token: str | None = None,
+        bypass_mode: str | None = None,
         bypass_sni: bool = True,
         accept_language: str = "zh-CN",
         proxy: str | None = None,
@@ -936,6 +1019,8 @@ class PixivClientFacade:
         search_retryable_failure_budget: int | None = None,
     ) -> dict[str, Any]:
         params = params or {}
+        normalized_bypass_mode = _normalize_bypass_mode(bypass_mode)
+        bypass_sni = bypass_sni and normalized_bypass_mode != "disabled"
         requires_auth = action not in AUTH_OPTIONAL_ACTIONS
         current_user_id: int | None = None
         if requires_auth and not access_token:
@@ -963,7 +1048,11 @@ class PixivClientFacade:
                     current_user_id = int(user_id)
 
         if action == "bookmark_metadata_page":
-            bookmark_user_id = params.get("bookmark_user_id") or params.get("user_id") or current_user_id
+            bookmark_user_id = (
+                params.get("bookmark_user_id")
+                or params.get("user_id")
+                or current_user_id
+            )
             if bookmark_user_id is None:
                 raise ValueError("Missing bookmark_user_id/user_id.")
             restrict = str(params.get("restrict") or "public").strip().lower()
@@ -1024,31 +1113,53 @@ class PixivClientFacade:
                         if isinstance(illust, dict)
                     ],
                     "illusts": illusts if isinstance(illusts, list) else [],
-                    "next_url": page_data.get("next_url") if isinstance(page_data, dict) else None,
+                    "next_url": page_data.get("next_url")
+                    if isinstance(page_data, dict)
+                    else None,
                 },
                 "error": page_data if not page_res.ok else None,
                 "access_token": access_token,
                 "refresh_token": refresh_token,
             }
 
-        if action in {"random_bookmark_image", "random_bookmark", "random_bookmark_by_tag"}:
-            bookmark_user_id = params.get("bookmark_user_id") or params.get("user_id") or current_user_id
+        if action in {
+            "random_bookmark_image",
+            "random_bookmark",
+            "random_bookmark_by_tag",
+        }:
+            bookmark_user_id = (
+                params.get("bookmark_user_id")
+                or params.get("user_id")
+                or current_user_id
+            )
             if bookmark_user_id is None:
                 raise ValueError("Missing bookmark_user_id/user_id.")
             tag = str(params.get("tag")) if params.get("tag") else None
             author_id_raw = params.get("author_id") or params.get("author_user_id")
-            author_id = int(str(author_id_raw).strip()) if author_id_raw is not None and str(author_id_raw).strip() else None
+            author_id = (
+                int(str(author_id_raw).strip())
+                if author_id_raw is not None and str(author_id_raw).strip()
+                else None
+            )
             author_name_raw = params.get("author") or params.get("author_name")
             author_name = str(author_name_raw).strip() if author_name_raw else None
             restrict = str(params.get("restrict") or "public").strip().lower()
             if restrict not in {"public", "private"}:
                 restrict = "public"
             exclude_ids_raw = params.get("exclude_ids")
-            exclude_ids = {
-                int(i) for i in exclude_ids_raw
-                if isinstance(i, (int, str)) and str(i).isdigit()
-            } if isinstance(exclude_ids_raw, (list, set)) else set()
-            list_params: dict[str, Any] = {"user_id": bookmark_user_id, "restrict": restrict}
+            exclude_ids = (
+                {
+                    int(i)
+                    for i in exclude_ids_raw
+                    if isinstance(i, (int, str)) and str(i).isdigit()
+                }
+                if isinstance(exclude_ids_raw, (list, set))
+                else set()
+            )
+            list_params: dict[str, Any] = {
+                "user_id": bookmark_user_id,
+                "restrict": restrict,
+            }
             if tag:
                 list_params["tag"] = tag
             sampled: dict[str, Any] | None = None
@@ -1087,7 +1198,9 @@ class PixivClientFacade:
                     for illust in illusts:
                         if not isinstance(illust, dict):
                             continue
-                        if not _match_author(illust, author_id=author_id, author_name=author_name):
+                        if not _match_author(
+                            illust, author_id=author_id, author_name=author_name
+                        ):
                             continue
                         if tag and not _match_illust_tag(illust, tag):
                             continue
@@ -1098,7 +1211,13 @@ class PixivClientFacade:
                         if random.randrange(matched) == 0:
                             sampled = illust
                 next_url_val = page_data.get("next_url")
-                next_url = next_url_val if isinstance(next_url_val, str) and next_url_val and pages < max_pages else None
+                next_url = (
+                    next_url_val
+                    if isinstance(next_url_val, str)
+                    and next_url_val
+                    and pages < max_pages
+                    else None
+                )
                 next_params = None
             if not sampled:
                 return {
@@ -1107,7 +1226,9 @@ class PixivClientFacade:
                     "status": 404,
                     "error": {"message": "No bookmarked illust matched filters."},
                 }
-            sampled_user = sampled.get("user") if isinstance(sampled.get("user"), dict) else {}
+            sampled_user = (
+                sampled.get("user") if isinstance(sampled.get("user"), dict) else {}
+            )
             tags = [
                 item.get("name")
                 for item in sampled.get("tags", [])
@@ -1120,9 +1241,14 @@ class PixivClientFacade:
                 "data": {
                     "id": sampled.get("id"),
                     "title": sampled.get("title"),
-                    "author": {"id": sampled_user.get("id"), "name": sampled_user.get("name")},
+                    "author": {
+                        "id": sampled_user.get("id"),
+                        "name": sampled_user.get("name"),
+                    },
                     "tags": tags,
-                    "image_url": pick_illust_image_url(sampled, str(params.get("quality", "original"))),
+                    "image_url": pick_illust_image_url(
+                        sampled, str(params.get("quality", "original"))
+                    ),
                     "illust": sampled,
                     "matched_count": matched,
                     "pages_scanned": pages,
@@ -1222,7 +1348,10 @@ class PixivClientFacade:
                 "GET",
                 endpoint,
                 req_params=web_params,
-                headers={"Referer": PIXIV_WEB_REFERER, "X-Requested-With": "XMLHttpRequest"},
+                headers={
+                    "Referer": PIXIV_WEB_REFERER,
+                    "X-Requested-With": "XMLHttpRequest",
+                },
                 action=action,
                 bypass_sni=bypass_sni,
                 accept_language=accept_language,
@@ -1243,15 +1372,31 @@ class PixivClientFacade:
                 payload = web_res.json()
             except Exception:
                 payload = {"error": True, "message": web_res.text}
-            body = _extract_web_search_body(payload if isinstance(payload, dict) else {})
+            body = _extract_web_search_body(
+                payload if isinstance(payload, dict) else {}
+            )
             if action == "web_search_illust":
-                illust_container = body.get("illustManga") if isinstance(body.get("illustManga"), dict) else body
-                items = illust_container.get("data") if isinstance(illust_container, dict) else []
+                illust_container = (
+                    body.get("illustManga")
+                    if isinstance(body.get("illustManga"), dict)
+                    else body
+                )
+                items = (
+                    illust_container.get("data")
+                    if isinstance(illust_container, dict)
+                    else []
+                )
                 if not isinstance(items, list):
                     items = []
                 data = {
-                    "illusts": [_normalize_web_illust_item(item) for item in items if isinstance(item, dict)],
-                    "total": illust_container.get("total") if isinstance(illust_container, dict) else None,
+                    "illusts": [
+                        _normalize_web_illust_item(item)
+                        for item in items
+                        if isinstance(item, dict)
+                    ],
+                    "total": illust_container.get("total")
+                    if isinstance(illust_container, dict)
+                    else None,
                 }
             else:
                 users = body.get("users")
@@ -1260,7 +1405,11 @@ class PixivClientFacade:
                 if not isinstance(users, list):
                     users = []
                 data = {
-                    "user_previews": [_normalize_web_user_preview(item) for item in users if isinstance(item, dict)],
+                    "user_previews": [
+                        _normalize_web_user_preview(item)
+                        for item in users
+                        if isinstance(item, dict)
+                    ],
                     "total": body.get("total"),
                 }
             return {
@@ -1280,11 +1429,17 @@ class PixivClientFacade:
                 **params,
             }
 
-        request_path = API_ACTIONS.get(action, action if str(action).startswith("/") else None)
+        request_path = API_ACTIONS.get(
+            action, action if str(action).startswith("/") else None
+        )
         if not request_path:
             raise ValueError(f"Unsupported action: {action}")
         method = "GET"
-        api_url = f"{API_BASE}{request_path}" if request_path.startswith("/") else request_path
+        api_url = (
+            f"{API_BASE}{request_path}"
+            if request_path.startswith("/")
+            else request_path
+        )
         res = self.transport.send(
             method,
             api_url,

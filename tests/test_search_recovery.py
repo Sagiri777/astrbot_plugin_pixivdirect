@@ -216,6 +216,31 @@ def test_oauth_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
     assert sni_disabled == [True, True]
 
 
+def test_call_action_accepts_legacy_bypass_mode_keyword(monkeypatch) -> None:
+    request_hosts: list[str] = []
+
+    def handler(**kwargs):
+        request_hosts.append(urlsplit(str(kwargs["url"])).hostname or "")
+        return _FakeResponse(200, {"illust": {"id": 123}})
+
+    session = _FakeSession(handler)
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
+
+    result = pixiv_client.PixivClientFacade().call_action(
+        "illust_detail",
+        {"illust_id": 123},
+        access_token="token",
+        refresh_token="refresh",
+        bypass_mode="pixez",
+        bypass_sni=False,
+    )
+
+    assert result["ok"] is True
+    assert request_hosts == ["app-api.pixiv.net"]
+
+
 def test_image_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
     monkeypatch,
 ) -> None:
