@@ -31,6 +31,7 @@ PIXEZ_HOST_MAP: dict[str, str] = {
     "i.pximg.net": "210.140.139.133",
     "s.pximg.net": "210.140.139.133",
 }
+
 HOST_ALIAS_MAP: dict[str, str] = {
     "app-api.pixiv.net": "pixiv.me",
     "oauth.secure.pixiv.net": "pixiv.me",
@@ -71,12 +72,14 @@ API_ACTIONS: dict[str, str] = {
     "user_bookmarks_illust": "/v1/user/bookmarks/illust",
     "ugoira_metadata": "/v1/ugoira/metadata",
 }
+
 AUTH_OPTIONAL_ACTIONS: set[str] = {
     "image",
     "ugoira_zip",
     "web_search_illust",
     "web_search_user",
 }
+
 WEB_SEARCH_SORT_MAP: dict[str, str] = {
     "date_desc": "date_d",
     "date_asc": "date",
@@ -160,10 +163,7 @@ def _skip_dns_name(payload: bytes, offset: int) -> int:
 
 
 def _resolve_a_records_via_dns_server(
-    host: str,
-    *,
-    dns_server: str,
-    timeout: int,
+    host: str, *, dns_server: str, timeout: int
 ) -> list[str]:
     request_id = next(_DNS_REQUEST_COUNTER) & 0xFFFF
     query = _build_dns_query(host, request_id)
@@ -244,19 +244,11 @@ def _resolve_host_ips(
     timeout: int,
     session: requests.Session | None = None,
     proxies: dict[str, str] | None = None,
-    max_doh_servers: int | None = None,
 ) -> list[str]:
-    del session, proxies, max_doh_servers
+    del session, proxies
     return _resolve_a_records_via_dns_server(
         host, dns_server=doh_server, timeout=timeout
     )
-
-
-def _rank_ips_by_latency(
-    ips: list[str], *, timeout: float
-) -> tuple[list[str], dict[str, float]]:
-    del timeout
-    return ips, {}
 
 
 def _build_pixez_ip_candidates(
@@ -294,14 +286,13 @@ def _build_pixez_ip_candidates(
             _set_runtime_dns_cache(live_cache_key, live_ips)
         for ip in live_ips:
             add_candidate(ip)
-
     return candidates
 
 
 def _load_host_map_file(path: str) -> dict[str, str]:
     try:
-        with open(path, encoding="utf-8") as f:
-            raw = json.load(f)
+        with open(path, encoding="utf-8") as file:
+            raw = json.load(file)
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return {}
     if not isinstance(raw, dict):
@@ -321,15 +312,15 @@ def _load_host_map_file(path: str) -> dict[str, str]:
 def _save_host_map_file(path: str, host_map: dict[str, str]) -> None:
     payload = {
         host: host_map[host]
-        for host in PIXEZ_HOST_MAP.keys()
+        for host in PIXEZ_HOST_MAP
         if host in host_map and _is_ipv4(host_map[host])
     }
     directory = os.path.dirname(path)
     if directory:
         os.makedirs(directory, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
-        f.write("\n")
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(payload, file, ensure_ascii=False, indent=2)
+        file.write("\n")
 
 
 def _refresh_pixez_hosts_via_dns(
@@ -359,8 +350,6 @@ def refresh_pixiv_host_map(
     proxy: str | None = None,
     hosts: list[str] | None = None,
 ) -> dict[str, str]:
-    proxies = {"http": proxy, "https": proxy} if proxy else None
-    session = _get_session()
     base_map = {
         host: PIXEZ_HOST_MAP[host]
         for host in (hosts or list(PIXEZ_HOST_MAP.keys()))
@@ -370,8 +359,6 @@ def refresh_pixiv_host_map(
         base_map=base_map,
         doh_server=dns_server,
         timeout=dns_timeout,
-        session=session,
-        proxies=proxies,
     )
     persisted_host_map = dict(PIXEZ_HOST_MAP)
     persisted_host_map.update(_load_host_map_file(dns_cache_file))
@@ -388,11 +375,11 @@ def refresh_pixiv_host_map(
 
 def _read_refresh_token_file(path: str = ".pixiv_refresh_token") -> str | None:
     try:
-        with open(path, encoding="utf-8") as f:
-            token = f.read().strip()
-            return token or None
+        with open(path, encoding="utf-8") as file:
+            token = file.read().strip()
     except FileNotFoundError:
         return None
+    return token or None
 
 
 def pick_illust_image_url(
@@ -421,32 +408,23 @@ def pick_illust_image_urls(
             if not isinstance(image_urls, dict):
                 continue
             for key in keys:
-                url = image_urls.get(key)
-                if isinstance(url, str) and url:
-                    urls.append(url)
+                value = image_urls.get(key)
+                if isinstance(value, str) and value:
+                    urls.append(value)
                     break
     if not urls:
         meta_single = illust.get("meta_single_page")
         if isinstance(meta_single, dict):
             original = meta_single.get("original_image_url")
             if isinstance(original, str) and original:
-                if quality == "small":
-                    image_urls = illust.get("image_urls")
-                    square = (
-                        image_urls.get("square_medium")
-                        if isinstance(image_urls, dict)
-                        else None
-                    )
+                image_urls = illust.get("image_urls")
+                if quality == "small" and isinstance(image_urls, dict):
+                    square = image_urls.get("square_medium")
                     urls.append(
                         square if isinstance(square, str) and square else original
                     )
-                elif quality == "medium":
-                    image_urls = illust.get("image_urls")
-                    large = (
-                        image_urls.get("large")
-                        if isinstance(image_urls, dict)
-                        else None
-                    )
+                elif quality == "medium" and isinstance(image_urls, dict):
+                    large = image_urls.get("large")
                     urls.append(large if isinstance(large, str) and large else original)
                 else:
                     urls.append(original)
@@ -454,14 +432,14 @@ def pick_illust_image_urls(
         image_urls = illust.get("image_urls")
         if isinstance(image_urls, dict):
             for key in keys:
-                url = image_urls.get(key)
-                if isinstance(url, str) and url:
-                    urls.append(url)
+                value = image_urls.get(key)
+                if isinstance(value, str) and value:
+                    urls.append(value)
                     break
     return urls
 
 
-def _illust_to_metadata_entry(
+def _build_metadata_entry(
     illust: dict[str, Any],
     *,
     restrict: str,
@@ -496,10 +474,7 @@ def _illust_to_metadata_entry(
 
 
 def _match_author(
-    illust: dict[str, Any],
-    *,
-    author_id: int | None,
-    author_name: str | None,
+    illust: dict[str, Any], *, author_id: int | None, author_name: str | None
 ) -> bool:
     user = illust.get("user")
     if not isinstance(user, dict):
@@ -581,10 +556,7 @@ def _normalize_web_user_preview(item: dict[str, Any]) -> dict[str, Any]:
             },
         },
         "illusts": [
-            {
-                "id": illust.get("id"),
-                "title": str(illust.get("title") or "（无标题）"),
-            }
+            {"id": illust.get("id"), "title": str(illust.get("title") or "（无标题）")}
             for illust in item.get("illusts", [])
             if isinstance(illust, dict)
         ],
@@ -603,7 +575,7 @@ def _patched_dns_resolution(host_map: dict[str, str]):
     if not host_map:
         yield
         return
-    normalized = {k.lower().rstrip("."): v for k, v in host_map.items()}
+    normalized = {key.lower().rstrip("."): value for key, value in host_map.items()}
     original_getaddrinfo = socket.getaddrinfo
     _thread_local._original_getaddrinfo = original_getaddrinfo
     _thread_local._dns_normalized = normalized
@@ -647,14 +619,14 @@ def _get_session() -> requests.Session:
         with _session_lock:
             if _global_session is None:
                 session = requests.Session()
-                https_adapter = HTTPAdapter(
-                    pool_connections=10, pool_maxsize=20, max_retries=3
+                session.mount(
+                    "https://",
+                    HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=3),
                 )
-                http_adapter = HTTPAdapter(
-                    pool_connections=10, pool_maxsize=20, max_retries=3
+                session.mount(
+                    "http://",
+                    HTTPAdapter(pool_connections=10, pool_maxsize=20, max_retries=3),
                 )
-                session.mount("https://", https_adapter)
-                session.mount("http://", http_adapter)
                 _global_session = session
     return _global_session
 
@@ -884,7 +856,6 @@ class PixivTransport:
             retryable_statuses_for_action=retryable_statuses,
             retryable_failure_budget_for_action=retryable_failure_budget,
         )
-
         if (
             not runtime_dns_resolve
             and last_res is None
@@ -947,20 +918,7 @@ class PixivAuthClient:
         self._transport = transport
 
     def refresh_access_token(
-        self,
-        *,
-        refresh_token: str | None,
-        proxy: str | None = None,
-        dns_cache_file: str = ".pixiv_host_map.json",
-        bypass_sni: bool = True,
-        timeout: int = 30,
-        connect_timeout: float = 8.0,
-        dns_timeout: int = 3,
-        dns_update_hosts: bool = False,
-        dns_server: str = "doh.dns.sb",
-        runtime_dns_resolve: bool = False,
-        max_retries: int = 3,
-        connect_probe_timeout: float = 2.0,
+        self, *, refresh_token: str | None, **kwargs: Any
     ) -> dict[str, Any]:
         refresh_token = (
             refresh_token
@@ -971,7 +929,7 @@ class PixivAuthClient:
             raise ValueError(
                 "Missing refresh_token. Pass it or set PIXIV_REFRESH_TOKEN."
             )
-        res = self._transport.send(
+        response = self._transport.send(
             "POST",
             OAUTH_URL,
             data={
@@ -983,26 +941,16 @@ class PixivAuthClient:
             },
             headers={"Content-Type": "application/x-www-form-urlencoded"},
             action="auth",
-            proxy=proxy,
-            dns_cache_file=dns_cache_file,
-            bypass_sni=bypass_sni,
-            timeout=timeout,
-            connect_timeout=connect_timeout,
-            dns_timeout=dns_timeout,
-            dns_update_hosts=dns_update_hosts,
-            dns_server=dns_server,
-            runtime_dns_resolve=runtime_dns_resolve,
-            max_retries=max_retries,
-            connect_probe_timeout=connect_probe_timeout,
+            **kwargs,
         )
-        payload = res.json()
+        payload = response.json()
         return {
-            "ok": res.ok,
-            "status": res.status_code,
+            "ok": response.ok,
+            "status": response.status_code,
             "access_token": payload.get("access_token"),
             "refresh_token": payload.get("refresh_token") or refresh_token,
             "user": payload.get("user"),
-            "error": payload if not res.ok else None,
+            "error": payload if not response.ok else None,
         }
 
 
@@ -1018,17 +966,6 @@ class PixivApiClient:
     def get_user_detail(self, user_id: int, **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("user_detail", {"user_id": user_id}, **kwargs)
 
-    def search_illusts(self, params: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        return self._facade.call_action("search_illust", params, **kwargs)
-
-    def search_users(self, params: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
-        return self._facade.call_action("search_user", params, **kwargs)
-
-    def get_bookmark_metadata_page(
-        self, params: dict[str, Any], **kwargs: Any
-    ) -> dict[str, Any]:
-        return self._facade.call_action("bookmark_metadata_page", params, **kwargs)
-
 
 class PixivImageClient:
     def __init__(self, facade: PixivClientFacade) -> None:
@@ -1036,11 +973,6 @@ class PixivImageClient:
 
     def download_image(self, url: str, **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("image", {"url": url}, **kwargs)
-
-    def get_ugoira_metadata(self, illust_id: int, **kwargs: Any) -> dict[str, Any]:
-        return self._facade.call_action(
-            "ugoira_metadata", {"illust_id": illust_id}, **kwargs
-        )
 
     def download_ugoira_zip(self, url: str, **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("ugoira_zip", {"url": url}, **kwargs)
@@ -1084,20 +1016,25 @@ class PixivClientFacade:
         params = params or {}
         requires_auth = action not in AUTH_OPTIONAL_ACTIONS
         current_user_id: int | None = None
+        transport_kwargs = {
+            "proxy": proxy,
+            "dns_cache_file": dns_cache_file,
+            "bypass_sni": bypass_sni,
+            "timeout": timeout,
+            "connect_timeout": connect_timeout,
+            "dns_timeout": dns_timeout,
+            "dns_update_hosts": dns_update_hosts,
+            "dns_server": dns_server,
+            "runtime_dns_resolve": runtime_dns_resolve,
+            "max_retries": max_retries,
+            "connect_probe_timeout": connect_probe_timeout,
+            "search_runtime_ip_candidate_limit": search_runtime_ip_candidate_limit,
+            "search_retryable_failure_budget": search_retryable_failure_budget,
+            "accept_language": accept_language,
+        }
         if requires_auth and not access_token:
             auth_result = self.auth.refresh_access_token(
-                refresh_token=refresh_token,
-                proxy=proxy,
-                dns_cache_file=dns_cache_file,
-                bypass_sni=bypass_sni,
-                timeout=timeout,
-                connect_timeout=connect_timeout,
-                dns_timeout=dns_timeout,
-                dns_update_hosts=dns_update_hosts,
-                dns_server=dns_server,
-                runtime_dns_resolve=runtime_dns_resolve,
-                max_retries=max_retries,
-                connect_probe_timeout=connect_probe_timeout,
+                refresh_token=refresh_token, **transport_kwargs
             )
             if not auth_result.get("ok"):
                 return {
@@ -1134,46 +1071,24 @@ class PixivClientFacade:
             else:
                 request_url = f"{API_BASE}{API_ACTIONS['user_bookmarks_illust']}"
                 request_params = {"user_id": bookmark_user_id, "restrict": restrict}
-                offset = params.get("offset")
-                if offset is not None:
-                    request_params["offset"] = max(0, int(offset))
-                tag = params.get("tag")
-                if isinstance(tag, str) and tag.strip():
-                    request_params["tag"] = tag.strip()
-            page_res = self.transport.send(
+            response = self.transport.send(
                 "GET",
                 request_url,
                 req_params=request_params,
                 with_auth=True,
                 action=action,
                 access_token=access_token,
-                bypass_sni=bypass_sni,
-                accept_language=accept_language,
-                proxy=proxy,
-                timeout=timeout,
-                connect_timeout=connect_timeout,
-                dns_timeout=dns_timeout,
-                dns_update_hosts=dns_update_hosts,
-                dns_server=dns_server,
-                dns_cache_file=dns_cache_file,
-                runtime_dns_resolve=runtime_dns_resolve,
-                max_retries=max_retries,
-                connect_probe_timeout=connect_probe_timeout,
-                search_runtime_ip_candidate_limit=search_runtime_ip_candidate_limit,
-                search_retryable_failure_budget=search_retryable_failure_budget,
+                **transport_kwargs,
             )
-            try:
-                page_data = page_res.json()
-            except Exception:
-                page_data = {"raw": page_res.text}
+            page_data = response.json()
             illusts = page_data.get("illusts") if isinstance(page_data, dict) else []
             return {
-                "ok": page_res.ok,
+                "ok": response.ok,
                 "action": action,
-                "status": page_res.status_code,
+                "status": response.status_code,
                 "data": {
                     "items": [
-                        _illust_to_metadata_entry(
+                        _build_metadata_entry(
                             illust,
                             restrict=restrict,
                             quality=str(params.get("quality") or "original"),
@@ -1181,19 +1096,17 @@ class PixivClientFacade:
                         for illust in illusts
                         if isinstance(illust, dict)
                     ],
-                    "illusts": illusts if isinstance(illusts, list) else [],
                     "next_url": page_data.get("next_url")
                     if isinstance(page_data, dict)
                     else None,
                 },
-                "error": page_data if not page_res.ok else None,
                 "access_token": access_token,
                 "refresh_token": refresh_token,
             }
 
         if action in {
-            "random_bookmark_image",
             "random_bookmark",
+            "random_bookmark_image",
             "random_bookmark_by_tag",
         }:
             bookmark_user_id = (
@@ -1204,87 +1117,60 @@ class PixivClientFacade:
             if bookmark_user_id is None:
                 raise ValueError("Missing bookmark_user_id/user_id.")
             tag = str(params.get("tag")) if params.get("tag") else None
-            author_id_raw = params.get("author_id") or params.get("author_user_id")
-            author_id = (
-                int(str(author_id_raw).strip())
-                if author_id_raw is not None and str(author_id_raw).strip()
-                else None
-            )
-            author_name_raw = params.get("author") or params.get("author_name")
-            author_name = str(author_name_raw).strip() if author_name_raw else None
             restrict = str(params.get("restrict") or "public").strip().lower()
             if restrict not in {"public", "private"}:
                 restrict = "public"
-            exclude_ids_raw = params.get("exclude_ids")
-            exclude_ids = (
-                {
-                    int(i)
-                    for i in exclude_ids_raw
-                    if isinstance(i, (int, str)) and str(i).isdigit()
-                }
-                if isinstance(exclude_ids_raw, (list, set))
-                else set()
-            )
-            list_params: dict[str, Any] = {
-                "user_id": bookmark_user_id,
-                "restrict": restrict,
-            }
-            if tag:
-                list_params["tag"] = tag
+            max_pages = max(1, int(str(params.get("max_pages") or 3)))
             sampled: dict[str, Any] | None = None
             matched = 0
-            pages = 0
-            max_pages = max(1, int(str(params.get("max_pages") or 3)))
+            page_count = 0
             next_url: str | None = f"{API_BASE}{API_ACTIONS['user_bookmarks_illust']}"
-            next_params: dict[str, Any] | None = list_params
+            next_params: dict[str, Any] | None = {
+                "user_id": bookmark_user_id,
+                "restrict": restrict,
+                "tag": tag,
+            }
             while next_url:
-                page_res = self.transport.send(
+                response = self.transport.send(
                     "GET",
                     next_url,
                     req_params=next_params,
                     with_auth=True,
                     action=action,
                     access_token=access_token,
-                    bypass_sni=bypass_sni,
-                    accept_language=accept_language,
-                    proxy=proxy,
-                    timeout=timeout,
-                    connect_timeout=connect_timeout,
-                    dns_timeout=dns_timeout,
-                    dns_update_hosts=dns_update_hosts,
-                    dns_server=dns_server,
-                    dns_cache_file=dns_cache_file,
-                    runtime_dns_resolve=runtime_dns_resolve,
-                    max_retries=max_retries,
-                    connect_probe_timeout=connect_probe_timeout,
-                    search_runtime_ip_candidate_limit=search_runtime_ip_candidate_limit,
-                    search_retryable_failure_budget=search_retryable_failure_budget,
+                    **transport_kwargs,
                 )
-                page_data = page_res.json()
-                pages += 1
+                page_data = response.json()
+                page_count += 1
                 illusts = page_data.get("illusts")
                 if isinstance(illusts, list):
                     for illust in illusts:
                         if not isinstance(illust, dict):
                             continue
+                        if tag and not _match_illust_tag(illust, tag):
+                            continue
+                        author_id_raw = params.get("author_id")
+                        author_id = (
+                            int(author_id_raw)
+                            if isinstance(author_id_raw, int)
+                            else None
+                        )
+                        author_name = (
+                            str(params.get("author")) if params.get("author") else None
+                        )
                         if not _match_author(
                             illust, author_id=author_id, author_name=author_name
                         ):
                             continue
-                        if tag and not _match_illust_tag(illust, tag):
-                            continue
-                        illust_id = illust.get("id")
-                        if isinstance(illust_id, int) and illust_id in exclude_ids:
-                            continue
                         matched += 1
                         if random.randrange(matched) == 0:
                             sampled = illust
-                next_url_val = page_data.get("next_url")
+                next_value = page_data.get("next_url")
                 next_url = (
-                    next_url_val
-                    if isinstance(next_url_val, str)
-                    and next_url_val
-                    and pages < max_pages
+                    next_value
+                    if isinstance(next_value, str)
+                    and next_value
+                    and page_count < max_pages
                     else None
                 )
                 next_params = None
@@ -1316,91 +1202,46 @@ class PixivClientFacade:
                     },
                     "tags": tags,
                     "image_url": pick_illust_image_url(
-                        sampled, str(params.get("quality", "original"))
+                        sampled, str(params.get("quality") or "original")
                     ),
                     "illust": sampled,
-                    "matched_count": matched,
-                    "pages_scanned": pages,
                 },
                 "access_token": access_token,
                 "refresh_token": refresh_token,
             }
 
-        if action == "image":
-            image_url = params.get("url")
-            if not image_url:
-                raise ValueError("action=image requires params.url")
-            image_res = self.transport.send(
+        if action in {"image", "ugoira_zip"}:
+            resource_url = params.get("url")
+            if not resource_url:
+                raise ValueError(f"action={action} requires params.url")
+            response = self.transport.send(
                 "GET",
-                str(image_url),
+                str(resource_url),
                 image_mode=True,
                 action=action,
-                bypass_sni=bypass_sni,
-                accept_language=accept_language,
-                proxy=proxy,
-                timeout=timeout,
-                connect_timeout=connect_timeout,
-                dns_timeout=dns_timeout,
-                dns_update_hosts=dns_update_hosts,
-                dns_server=dns_server,
-                dns_cache_file=dns_cache_file,
-                runtime_dns_resolve=runtime_dns_resolve,
-                max_retries=max_retries,
-                connect_probe_timeout=connect_probe_timeout,
-                search_runtime_ip_candidate_limit=search_runtime_ip_candidate_limit,
-                search_retryable_failure_budget=search_retryable_failure_budget,
+                **transport_kwargs,
             )
             return {
-                "ok": image_res.ok,
+                "ok": response.ok,
                 "action": action,
-                "status": image_res.status_code,
-                "content_type": image_res.headers.get("Content-Type"),
-                "content": image_res.content,
-            }
-
-        if action == "ugoira_zip":
-            zip_url = params.get("url")
-            if not zip_url:
-                raise ValueError("action=ugoira_zip requires params.url")
-            zip_res = self.transport.send(
-                "GET",
-                str(zip_url),
-                image_mode=True,
-                action=action,
-                bypass_sni=bypass_sni,
-                accept_language=accept_language,
-                proxy=proxy,
-                timeout=timeout,
-                connect_timeout=connect_timeout,
-                dns_timeout=dns_timeout,
-                dns_update_hosts=dns_update_hosts,
-                dns_server=dns_server,
-                dns_cache_file=dns_cache_file,
-                runtime_dns_resolve=runtime_dns_resolve,
-                max_retries=max_retries,
-                connect_probe_timeout=connect_probe_timeout,
-                search_runtime_ip_candidate_limit=search_runtime_ip_candidate_limit,
-                search_retryable_failure_budget=search_retryable_failure_budget,
-            )
-            return {
-                "ok": zip_res.ok,
-                "action": action,
-                "status": zip_res.status_code,
-                "content_type": zip_res.headers.get("Content-Type"),
-                "content": zip_res.content,
+                "status": response.status_code,
+                "content_type": response.headers.get("Content-Type"),
+                "content": response.content,
             }
 
         if action in {"web_search_illust", "web_search_user"}:
             keyword = str(params.get("word") or "").strip()
             if not keyword:
                 raise ValueError(f"action={action} requires params.word")
-            page = max(1, int(params.get("page", 1) or 1))
             endpoint = (
                 f"{PIXIV_WEB_BASE}/ajax/search/artworks/{quote(keyword)}"
                 if action == "web_search_illust"
                 else f"{PIXIV_WEB_BASE}/ajax/search/users/{quote(keyword)}"
             )
-            web_params: dict[str, Any] = {"word": keyword, "p": page}
+            web_params: dict[str, Any] = {
+                "word": keyword,
+                "p": max(1, int(params.get("page", 1) or 1)),
+            }
             sort = str(params.get("sort") or "date_desc").strip().lower()
             target = str(params.get("search_target") or "").strip().lower()
             duration = str(params.get("duration") or "").strip().lower()
@@ -1413,7 +1254,7 @@ class PixivClientFacade:
                 web_params["s_mode"] = mapped_target
             if mapped_duration and action == "web_search_illust":
                 web_params["mode"] = mapped_duration
-            web_res = self.transport.send(
+            response = self.transport.send(
                 "GET",
                 endpoint,
                 req_params=web_params,
@@ -1422,125 +1263,91 @@ class PixivClientFacade:
                     "X-Requested-With": "XMLHttpRequest",
                 },
                 action=action,
-                bypass_sni=bypass_sni,
-                accept_language=accept_language,
-                proxy=proxy,
-                timeout=timeout,
-                connect_timeout=connect_timeout,
-                dns_timeout=dns_timeout,
-                dns_update_hosts=dns_update_hosts,
-                dns_server=dns_server,
-                dns_cache_file=dns_cache_file,
-                runtime_dns_resolve=runtime_dns_resolve,
-                max_retries=max_retries,
-                connect_probe_timeout=connect_probe_timeout,
-                search_runtime_ip_candidate_limit=search_runtime_ip_candidate_limit,
-                search_retryable_failure_budget=search_retryable_failure_budget,
+                **transport_kwargs,
             )
-            try:
-                payload = web_res.json()
-            except Exception:
-                payload = {"error": True, "message": web_res.text}
+            payload = response.json()
             body = _extract_web_search_body(
                 payload if isinstance(payload, dict) else {}
             )
             if action == "web_search_illust":
-                illust_container = (
+                container = (
                     body.get("illustManga")
                     if isinstance(body.get("illustManga"), dict)
                     else body
                 )
-                items = (
-                    illust_container.get("data")
-                    if isinstance(illust_container, dict)
-                    else []
-                )
-                if not isinstance(items, list):
-                    items = []
+                items = container.get("data") if isinstance(container, dict) else []
                 data = {
                     "illusts": [
                         _normalize_web_illust_item(item)
                         for item in items
                         if isinstance(item, dict)
-                    ],
-                    "total": illust_container.get("total")
-                    if isinstance(illust_container, dict)
-                    else None,
+                    ]
                 }
             else:
                 users = body.get("users")
                 if not isinstance(users, list):
                     users = body.get("user_previews")
-                if not isinstance(users, list):
-                    users = []
                 data = {
                     "user_previews": [
                         _normalize_web_user_preview(item)
-                        for item in users
+                        for item in (users or [])
                         if isinstance(item, dict)
-                    ],
-                    "total": body.get("total"),
+                    ]
                 }
             return {
-                "ok": web_res.ok,
+                "ok": response.ok,
                 "action": action,
-                "status": web_res.status_code,
+                "status": response.status_code,
                 "data": data,
-                "error": payload if not web_res.ok else None,
                 "access_token": access_token,
                 "refresh_token": refresh_token,
             }
 
         if action == "illust_recommended":
-            params = {
-                "filter": "for_ios",
-                "include_ranking_label": "true",
-                **params,
-            }
+            params = {"filter": "for_ios", "include_ranking_label": "true", **params}
 
         request_path = API_ACTIONS.get(
             action, action if str(action).startswith("/") else None
         )
         if not request_path:
             raise ValueError(f"Unsupported action: {action}")
-        method = "GET"
-        api_url = (
+        request_url = (
             f"{API_BASE}{request_path}"
             if request_path.startswith("/")
             else request_path
         )
-        res = self.transport.send(
-            method,
-            api_url,
+        response = self.transport.send(
+            "GET",
+            request_url,
             req_params=params,
             with_auth=requires_auth,
             action=action,
             access_token=access_token,
-            bypass_sni=bypass_sni,
-            accept_language=accept_language,
-            proxy=proxy,
-            timeout=timeout,
-            connect_timeout=connect_timeout,
-            dns_timeout=dns_timeout,
-            dns_update_hosts=dns_update_hosts,
-            dns_server=dns_server,
-            dns_cache_file=dns_cache_file,
-            runtime_dns_resolve=runtime_dns_resolve,
-            max_retries=max_retries,
-            connect_probe_timeout=connect_probe_timeout,
-            search_runtime_ip_candidate_limit=search_runtime_ip_candidate_limit,
-            search_retryable_failure_budget=search_retryable_failure_budget,
+            **transport_kwargs,
         )
         try:
-            data = res.json()
+            data = response.json()
         except Exception:
-            data = {"raw": res.text}
+            data = {"raw": response.text}
         return {
-            "ok": res.ok,
+            "ok": response.ok,
             "action": action,
-            "status": res.status_code,
+            "status": response.status_code,
             "data": data,
-            "error": data if not res.ok else None,
+            "error": data if not response.ok else None,
             "access_token": access_token,
             "refresh_token": refresh_token,
         }
+
+
+__all__ = [
+    "PixivApiClient",
+    "PixivAuthClient",
+    "PixivClientFacade",
+    "PixivDnsResolver",
+    "PixivImageClient",
+    "PixivTransport",
+    "pick_illust_image_url",
+    "pick_illust_image_urls",
+    "refresh_pixiv_host_map",
+]

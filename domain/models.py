@@ -5,59 +5,46 @@ from typing import Any
 
 
 @dataclass(slots=True)
-class RequestContext:
-    platform: str = ""
-    user_id: str = ""
-    group_id: str = ""
-    command: str = ""
-    trace_id: str = ""
+class PixivUser:
+    id: int
+    name: str
+    account: str = ""
 
 
 @dataclass(slots=True)
-class SearchOptions:
+class PixivIllust:
+    id: int
+    title: str
+    type: str
+    user: PixivUser
+    tags: list[str] = field(default_factory=list)
+    page_count: int = 1
+    total_view: int = 0
+    total_bookmarks: int = 0
+    x_restrict: int = 0
+    create_date: str = ""
+    image_urls: list[str] = field(default_factory=list)
+    raw: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class SearchQuery:
     keyword: str
     page: int = 1
-    limit: int = 10
-    sort: str = "date_desc"
-    search_target: str = "partial_match_for_tags"
-    duration: str | None = None
-    include_translated_tag_results: bool = True
+    sort: str | None = None
+    search_target: str | None = None
 
 
 @dataclass(slots=True)
-class RandomFilter:
+class BookmarkRandomQuery:
     restrict: str = "public"
-    tags: list[str] = field(default_factory=list)
-    exclude_tags: list[str] = field(default_factory=list)
-    authors: list[str] = field(default_factory=list)
-    exclude_authors: list[str] = field(default_factory=list)
-    author_ids: list[int] = field(default_factory=list)
-    exclude_author_ids: list[int] = field(default_factory=list)
+    tag: str | None = None
+    pages: int = 3
 
 
 @dataclass(slots=True)
-class CacheItem:
-    path: str
-    caption: str = ""
-    x_restrict: int = 0
-    tags: list[str] = field(default_factory=list)
-    illust_id: int | None = None
-    author_id: int | str | None = None
-    author_name: str = ""
-    page_count: int = 1
-    extra_image_paths: list[str] = field(default_factory=list)
-
-
-@dataclass(slots=True)
-class MetadataItem:
+class DownloadedIllust:
     illust_id: int
-    title: str
-    author_id: int | None
-    author_name: str
-    tags: list[str]
-    x_restrict: int
-    page_count: int
-    image_urls: list[str]
-    caption_seed: dict[str, Any] = field(default_factory=dict)
-    bookmark_restrict: str = "public"
-    cached_at: str = ""
+    page: int
+    local_path: str
+    source_url: str

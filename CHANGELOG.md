@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [4.0.0] - 2026-04-05
+
+### Added
+- 新增基于 `pixez-flutter` 结构拆分的 `infrastructure/pixez` 内核，统一承载 PixEz 风格的 host map、传输层、OAuth 和 App API facade
+- 新增 AstrBot 命令适配层的精简实现，提供 PixEz 移植版的登录、详情查询、搜索、随机收藏、质量设置和 DNS 查看能力
+
+### Changed
+- 以 `pixez-flutter` 为唯一行为参考，重写 `main.py`、`commands.py`、`config_manager.py`、`cache_manager.py`、`image_handler.py` 与 `infrastructure/pixiv_client.py`
+- 插件运行时主路径已切换到新的 PixEz 插件实现，不再依赖旧的命令层和旧客户端结构
+
+### Removed
+- 移除旧测试集，改为围绕新的 PixEz 插件实现补充基础回归测试
+- 清理旧 SDK、旧辅助模块、旧调试脚本和哈基米资源文件，仓库仅保留当前 PixEz 插件实现所需内容
+
 ## [3.0.3] - 2026-04-05
 
 ### Fixed
