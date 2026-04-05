@@ -35,6 +35,14 @@ PIXEZ_HOST_MAP: dict[str, str] = {
     "i.pximg.net": "210.140.139.133",
     "s.pximg.net": "210.140.139.133",
 }
+PIXEZ_API_HOSTS: set[str] = {
+    "app-api.pixiv.net",
+    "oauth.secure.pixiv.net",
+}
+PIXEZ_IMAGE_HOSTS: set[str] = {
+    "i.pximg.net",
+    "s.pximg.net",
+}
 
 # Accesser-like host aliases (domain -> upstream domain).
 HOST_ALIAS_MAP: dict[str, str] = {
@@ -296,7 +304,12 @@ def _resolve_a_records_via_doh(
         return []
 
     answers = data.get("Answer") or []
-    ip_candidates = [item.get("data") for item in answers if isinstance(item, dict)]
+    sorted_answers = sorted(
+        [item for item in answers if isinstance(item, dict)],
+        key=lambda item: int(item.get("TTL", 0) or 0),
+        reverse=True,
+    )
+    ip_candidates = [item.get("data") for item in sorted_answers]
     deduped: list[str] = []
     seen: set[str] = set()
     for ip in ip_candidates:
@@ -307,33 +320,16 @@ def _resolve_a_records_via_doh(
 
 
 def _doh_server_candidates(primary: str) -> list[str]:
-    # Note:
-    # - Aliyun public DNS (Do53): 223.5.5.5 / 223.6.6.6
-    # - Aliyun public DNS IPv6 (Do53): 2400:3200::1 / 2400:3200:baba::1
-    # This function builds DoH endpoints, so Ali uses dns.alidns.com here.
-    defaults = [
-        "https://doh.dns.sb/dns-query",
-        "https://cloudflare-dns.com/dns-query",
-    ]
     primary_normalized = (
         primary
         if primary.startswith("http://") or primary.startswith("https://")
         else f"https://{primary}/dns-query"
     )
-    candidates = [primary_normalized]
-    for server in defaults:
-        if server not in candidates:
-            candidates.append(server)
-    return candidates
+    return [primary_normalized]
 
 
 def _dns_server_candidates() -> list[str]:
-    return [
-        "223.5.5.5",
-        "223.6.6.6",
-        "8.8.8.8",
-        "1.1.1.1",
-    ]
+    return []
 
 
 def _get_runtime_dns_cache(key: str) -> list[str] | None:
@@ -444,9 +440,9 @@ def _resolve_host_ips(
     timeout: int,
     session: requests.Session,
     proxies: dict[str, str] | None,
-    max_doh_servers: int | None = None,
-    max_ips: int = 6,
-    include_system_dns: bool = True,
+    max_doh_servers: int | None = 1,
+    max_ips: int = 4,
+    include_system_dns: bool = False,
 ) -> list[str]:
     deduped: list[str] = []
     seen: set[str] = set()
@@ -473,28 +469,57 @@ def _resolve_host_ips(
             if len(deduped) >= max_ips:
                 return deduped
 
-    for dns_server in _dns_server_candidates():
-        ips = _resolve_a_records_via_dns_server(
-            host,
-            dns_server=dns_server,
-            timeout=timeout,
-        )
-        for ip in ips:
-            add_ip(ip)
-            if len(deduped) >= max_ips:
-                return deduped
-
-    if include_system_dns:
-        try:
-            infos = socket.getaddrinfo(host, 443, socket.AF_INET, socket.SOCK_STREAM)
-        except OSError:
-            return deduped
-        for info in infos:
-            ip = info[4][0]
-            add_ip(ip)
-            if len(deduped) >= max_ips:
-                return deduped
     return deduped
+
+
+def _build_pixez_ip_candidates(
+    req_host: str,
+    host_map: dict[str, str],
+    *,
+    runtime_dns_resolve: bool,
+    dns_server: str,
+    dns_timeout: int,
+    proxy: str | None,
+    session: requests.Session,
+    proxies: dict[str, str] | None,
+) -> list[str]:
+    candidates: list[str] = []
+
+    def add_candidate(ip: str | None) -> None:
+        if ip and _is_ipv4(ip) and ip not in candidates:
+            candidates.append(ip)
+
+    builtin_ip = PIXEZ_HOST_MAP.get(req_host)
+    cached_ip = host_map.get(req_host)
+
+    # Match the local PixEz clone's practical behavior:
+    # App API / OAuth stay pinned to the hard-coded IP unless users explicitly
+    # refresh into a clean compatible cache; image hosts may prefer cache first.
+    if req_host in PIXEZ_API_HOSTS:
+        add_candidate(builtin_ip)
+        add_candidate(cached_ip if cached_ip == builtin_ip else None)
+    else:
+        add_candidate(cached_ip)
+        add_candidate(builtin_ip)
+
+    if runtime_dns_resolve and not candidates:
+        live_cache_key = f"{req_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
+        live_ips = _get_runtime_dns_cache(live_cache_key)
+        if live_ips is None:
+            live_ips = _resolve_host_ips(
+                req_host,
+                doh_server=dns_server,
+                timeout=dns_timeout,
+                session=session,
+                proxies=proxies,
+                max_doh_servers=1,
+                include_system_dns=False,
+            )
+            _set_runtime_dns_cache(live_cache_key, live_ips)
+        for ip in live_ips:
+            add_candidate(ip)
+
+    return candidates
 
 
 def _load_host_map_file(path: str) -> dict[str, str]:
@@ -1218,30 +1243,16 @@ def pixiv(
         if has_proxy:
             return _do_request()
 
-        ip_candidates: list[str] = []
-        cached_ip = host_map.get(req_host)
-        if cached_ip and cached_ip not in ip_candidates:
-            ip_candidates.append(cached_ip)
-        builtin_ip = PIXEZ_HOST_MAP.get(req_host)
-        if builtin_ip and builtin_ip not in ip_candidates:
-            ip_candidates.append(builtin_ip)
-
-        if runtime_dns_resolve and not ip_candidates:
-            live_cache_key = f"{req_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
-            live_ips = _get_runtime_dns_cache(live_cache_key)
-            if live_ips is None:
-                live_ips = _resolve_host_ips(
-                    req_host,
-                    doh_server=dns_server,
-                    timeout=dns_timeout,
-                    session=session,
-                    proxies=proxies,
-                    max_doh_servers=None,
-                )
-                _set_runtime_dns_cache(live_cache_key, live_ips)
-            for ip in live_ips:
-                if ip not in ip_candidates:
-                    ip_candidates.append(ip)
+        ip_candidates = _build_pixez_ip_candidates(
+            req_host,
+            host_map,
+            runtime_dns_resolve=runtime_dns_resolve,
+            dns_server=dns_server,
+            dns_timeout=dns_timeout,
+            proxy=proxy,
+            session=session,
+            proxies=proxies,
+        )
         ip_candidates = _limit_candidates(ip_candidates, label="pixez")
 
         last_exc: Exception | None = None

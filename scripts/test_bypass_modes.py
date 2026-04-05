@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import json
 import logging
 import os
 import sys
+import tempfile
 import time
 import types
 from dataclasses import dataclass
@@ -155,6 +157,13 @@ def _run_call(
     extra: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], int]:
     _load_sdk_once()
+    if SDK is not None:
+        dns_cache_file.parent.mkdir(parents=True, exist_ok=True)
+        dns_cache_file.write_text(
+            json.dumps(getattr(SDK, "PIXEZ_HOST_MAP", {}), ensure_ascii=False, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
     call_kwargs = {
         "refresh_token": refresh_token,
         "access_token": access_token,
@@ -395,8 +404,8 @@ def main() -> int:
     )
     parser.add_argument(
         "--dns-cache-file",
-        default=str(Path.cwd() / ".manual_pixiv_host_map.json"),
-        help="Path for the temporary DNS cache file.",
+        default="",
+        help="Path for the temporary DNS cache file. Defaults to a fresh temp file per run.",
     )
     parser.add_argument(
         "--cooldown-seconds",
@@ -406,7 +415,11 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    dns_cache_file = Path(args.dns_cache_file)
+    dns_cache_file = (
+        Path(args.dns_cache_file)
+        if args.dns_cache_file
+        else Path(tempfile.gettempdir()) / "pixivdirect_test_bypass_modes_host_map.json"
+    )
     requested_checks = set(args.checks)
     results: list[CheckResult] = []
     throttler = RequestThrottler(args.cooldown_seconds)
