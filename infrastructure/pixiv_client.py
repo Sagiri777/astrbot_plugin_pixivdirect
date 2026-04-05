@@ -978,15 +978,6 @@ class PixivDnsResolver:
         return refresh_pixiv_host_map(**kwargs)
 
 
-def _normalize_bypass_mode(mode: str | None) -> str:
-    normalized = str(mode or "pixez").strip().lower()
-    if normalized in {"auto", "accesser"}:
-        return "pixez"
-    if normalized == "disabled":
-        return "disabled"
-    return "pixez"
-
-
 class PixivClientFacade:
     def __init__(self) -> None:
         self.transport = PixivTransport()
@@ -1002,7 +993,6 @@ class PixivClientFacade:
         *,
         refresh_token: str | None = None,
         access_token: str | None = None,
-        bypass_mode: str | None = None,
         bypass_sni: bool = True,
         accept_language: str = "zh-CN",
         proxy: str | None = None,
@@ -1019,8 +1009,6 @@ class PixivClientFacade:
         search_retryable_failure_budget: int | None = None,
     ) -> dict[str, Any]:
         params = params or {}
-        normalized_bypass_mode = _normalize_bypass_mode(bypass_mode)
-        bypass_sni = bypass_sni and normalized_bypass_mode != "disabled"
         requires_auth = action not in AUTH_OPTIONAL_ACTIONS
         current_user_id: int | None = None
         if requires_auth and not access_token:

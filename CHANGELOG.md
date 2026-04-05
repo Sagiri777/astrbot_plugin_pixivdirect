@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [3.0.2] - 2026-04-05
+
+### Changed
+- 移除 `main.py -> PixivClientFacade.call_action()` 这条新客户端调用链中的 `bypass_mode` 透传，改为仅保留实际仍生效的 `bypass_sni`、代理与 DNS 控制参数，避免继续堆叠无效兼容层
+
+### Fixed
+- 修复 `/pixiv` 主命令调用内建客户端时因为继续传递 `bypass_mode` 而触发参数不匹配异常的问题
+
 ## [3.0.1] - 2026-04-05
 
 ### Fixed

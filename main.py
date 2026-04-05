@@ -166,7 +166,6 @@ class PixivDirectPlugin(Star):
         bypass_mode = self._effective_bypass_mode()
         return {
             "bypass_sni": bypass_mode != "disabled" and not proxy,
-            "bypass_mode": "pixez",
             "proxy": proxy,
             "dns_cache_file": str(self._config_manager.host_map_file),
             "dns_update_hosts": dns_update_hosts,

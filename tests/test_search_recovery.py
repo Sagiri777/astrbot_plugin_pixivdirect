@@ -216,29 +216,27 @@ def test_oauth_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
     assert sni_disabled == [True, True]
 
 
-def test_call_action_accepts_legacy_bypass_mode_keyword(monkeypatch) -> None:
-    request_hosts: list[str] = []
+def test_build_pixiv_call_kwargs_does_not_include_bypass_mode(tmp_path) -> None:
+    class _DummyConfigManager:
+        def __init__(self, root: Path) -> None:
+            self.host_map_file = root / "pixiv_host_map.json"
 
-    def handler(**kwargs):
-        request_hosts.append(urlsplit(str(kwargs["url"])).hostname or "")
-        return _FakeResponse(200, {"illust": {"id": 123}})
+        def get_effective_bypass_mode(self) -> str:
+            return "pixez"
 
-    session = _FakeSession(handler)
-    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
-    monkeypatch.setattr(pixiv_client, "_load_host_map_file", lambda _path: {})
-    monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
+    class _DummyPlugin:
+        def __init__(self, root: Path) -> None:
+            self._config_manager = _DummyConfigManager(root)
 
-    result = pixiv_client.PixivClientFacade().call_action(
-        "illust_detail",
-        {"illust_id": 123},
-        access_token="token",
-        refresh_token="refresh",
-        bypass_mode="pixez",
-        bypass_sni=False,
-    )
+        def _effective_bypass_mode(self) -> str:
+            return self._config_manager.get_effective_bypass_mode()
 
-    assert result["ok"] is True
-    assert request_hosts == ["app-api.pixiv.net"]
+    plugin = _DummyPlugin(tmp_path)
+
+    call_kwargs = main_module.PixivDirectPlugin._build_pixiv_call_kwargs(plugin)
+
+    assert "bypass_mode" not in call_kwargs
+    assert call_kwargs["bypass_sni"] is True
 
 
 def test_image_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
