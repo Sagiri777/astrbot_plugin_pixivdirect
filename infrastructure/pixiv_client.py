@@ -65,6 +65,7 @@ API_ACTIONS: dict[str, str] = {
     "illust_detail": "/v1/illust/detail",
     "illust_ranking": "/v1/illust/ranking",
     "illust_recommended": "/v1/illust/recommended",
+    "illust_related": "/v2/illust/related",
     "search_illust": "/v1/search/illust",
     "search_user": "/v1/search/user",
     "user_detail": "/v1/user/detail",
@@ -966,6 +967,28 @@ class PixivApiClient:
     def get_user_detail(self, user_id: int, **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("user_detail", {"user_id": user_id}, **kwargs)
 
+    def get_illust_ranking(
+        self,
+        *,
+        mode: str,
+        date: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"mode": mode}
+        if date:
+            params["date"] = date
+        return self._facade.call_action("illust_ranking", params, **kwargs)
+
+    def get_illust_recommended(self, **kwargs: Any) -> dict[str, Any]:
+        return self._facade.call_action("illust_recommended", {}, **kwargs)
+
+    def get_illust_related(self, *, illust_id: int, **kwargs: Any) -> dict[str, Any]:
+        return self._facade.call_action(
+            "illust_related",
+            {"illust_id": illust_id},
+            **kwargs,
+        )
+
 
 class PixivImageClient:
     def __init__(self, facade: PixivClientFacade) -> None:
@@ -973,6 +996,13 @@ class PixivImageClient:
 
     def download_image(self, url: str, **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("image", {"url": url}, **kwargs)
+
+    def get_ugoira_metadata(self, *, illust_id: int, **kwargs: Any) -> dict[str, Any]:
+        return self._facade.call_action(
+            "ugoira_metadata",
+            {"illust_id": illust_id},
+            **kwargs,
+        )
 
     def download_ugoira_zip(self, url: str, **kwargs: Any) -> dict[str, Any]:
         return self._facade.call_action("ugoira_zip", {"url": url}, **kwargs)
@@ -1305,6 +1335,17 @@ class PixivClientFacade:
 
         if action == "illust_recommended":
             params = {"filter": "for_ios", "include_ranking_label": "true", **params}
+        elif action == "illust_ranking":
+            params = {"filter": "for_android", **params}
+        elif action == "illust_related":
+            illust_id = params.get("illust_id")
+            if not isinstance(illust_id, int):
+                raise ValueError("action=illust_related requires params.illust_id")
+            params = {"filter": "for_android", **params}
+        elif action == "ugoira_metadata":
+            illust_id = params.get("illust_id")
+            if not isinstance(illust_id, int):
+                raise ValueError("action=ugoira_metadata requires params.illust_id")
 
         request_path = API_ACTIONS.get(
             action, action if str(action).startswith("/") else None

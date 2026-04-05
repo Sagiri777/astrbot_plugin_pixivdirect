@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [4.1.0] - 2026-04-05
+
+### Added
+- 新增 `/pixiv ranking`、`/pixiv recommended`、`/pixiv related` 与 `/pixiv ugoira` 命令
+- 新增 `PIXEZ_MIGRATION_MATRIX.md`，系统梳理 PixEz 非 UI 能力迁移矩阵
+
+### Changed
+- 第 1 阶段已补齐 PixEz 对齐能力：`illust_ranking`、`illust_recommended`、`illust_related`、`ugoira_metadata`
+- ugoira 命令现已支持 metadata 获取、zip 下载、GIF 渲染和基本发送链路
+- README 当前能力、帮助文本与测试覆盖同步扩展到第 1 阶段命令
+
 ## [4.0.0] - 2026-04-05
 
 ### Added

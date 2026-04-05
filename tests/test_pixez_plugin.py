@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import io
 import sys
 import types
+import zipfile
 from pathlib import Path
+
+from PIL import Image
 
 
 class _DummyLogger:
@@ -227,3 +231,132 @@ def test_facade_recommended_action_injects_pixez_params(monkeypatch) -> None:
         "filter": "for_ios",
         "include_ranking_label": "true",
     }
+
+
+def test_ranking_command_calls_pixiv_ranking_action(tmp_path: Path) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_pixiv_call(action: str, params: dict, **kwargs):
+        calls.append((action, dict(params)))
+        return {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "illusts": [{"id": 10, "title": "ranked", "user": {"name": "author"}}]
+            },
+        }
+
+    config, handler = _build_handler(tmp_path, fake_pixiv_call)
+    asyncio.run(config.set_user_token("qq:10001", "refresh-token"))
+    event = AstrMessageEvent()
+
+    async def _run():
+        return [item async for item in handler.handle_ranking(event, ["ranking"])]
+
+    results = asyncio.run(_run())
+    assert calls[0][0] == "illust_ranking"
+    assert calls[0][1]["filter"] == "for_android"
+    assert "排行榜" in results[0]["message"]
+
+
+def test_recommended_and_related_commands_call_expected_actions(tmp_path: Path) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_pixiv_call(action: str, params: dict, **kwargs):
+        calls.append((action, dict(params)))
+        return {
+            "ok": True,
+            "status": 200,
+            "data": {
+                "illusts": [{"id": 11, "title": "rec", "user": {"name": "author"}}]
+            },
+        }
+
+    config, handler = _build_handler(tmp_path, fake_pixiv_call)
+    asyncio.run(config.set_user_token("qq:10001", "refresh-token"))
+    event = AstrMessageEvent()
+
+    async def _run():
+        collected = []
+        collected.extend(
+            [
+                item
+                async for item in handler.handle_recommended(
+                    event,
+                    ["recommended", "type=manga"],
+                )
+            ]
+        )
+        collected.extend(
+            [item async for item in handler.handle_related(event, ["related", "123"])]
+        )
+        return collected
+
+    results = asyncio.run(_run())
+    assert calls[0][0] == "/v1/manga/recommended"
+    assert calls[0][1]["filter"] == "for_ios"
+    assert calls[1][0] == "illust_related"
+    assert calls[1][1]["illust_id"] == 123
+    assert any(
+        "推荐" in item["message"] for item in results if item.get("type") == "text"
+    )
+    assert any(
+        "相关推荐" in item["message"] for item in results if item.get("type") == "text"
+    )
+
+
+def test_ugoira_command_downloads_zip_and_renders_gif(tmp_path: Path) -> None:
+    calls: list[str] = []
+
+    frame_bytes = io.BytesIO()
+    Image.new("RGBA", (8, 8), (255, 0, 0, 255)).save(frame_bytes, format="PNG")
+    png_payload = frame_bytes.getvalue()
+    zip_payload = io.BytesIO()
+    with zipfile.ZipFile(zip_payload, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("000000.png", png_payload)
+        archive.writestr("000001.png", png_payload)
+    zip_bytes = zip_payload.getvalue()
+
+    async def fake_pixiv_call(action: str, params: dict, **kwargs):
+        calls.append(action)
+        if action == "ugoira_metadata":
+            return {
+                "ok": True,
+                "status": 200,
+                "data": {
+                    "ugoira_metadata": {
+                        "zip_urls": {"medium": "https://example.com/ugoira.zip"},
+                        "frames": [
+                            {"file": "000000.png", "delay": 80},
+                            {"file": "000001.png", "delay": 120},
+                        ],
+                    }
+                },
+            }
+        if action == "ugoira_zip":
+            return {
+                "ok": True,
+                "status": 200,
+                "content": zip_bytes,
+            }
+        return {"ok": False, "status": 500, "error": {"message": "unexpected action"}}
+
+    config, handler = _build_handler(tmp_path, fake_pixiv_call)
+    asyncio.run(config.set_user_token("qq:10001", "refresh-token"))
+    event = AstrMessageEvent()
+
+    async def _run():
+        return [item async for item in handler.handle_ugoira(event, ["ugoira", "123"])]
+
+    results = asyncio.run(_run())
+    assert calls == ["ugoira_metadata", "ugoira_zip"]
+    assert any(
+        "Ugoira 元数据" in item["message"]
+        for item in results
+        if item.get("type") == "text"
+    )
+    image_payloads = [item for item in results if "image" in item]
+    assert len(image_payloads) == 1
+    gif_path = Path(image_payloads[0]["image"])
+    assert gif_path.exists()
+    assert gif_path.suffix.lower() == ".gif"

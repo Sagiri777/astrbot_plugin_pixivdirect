@@ -2,11 +2,17 @@
 
 基于 `pixez-flutter` 行为重建的 AstrBot Pixiv 插件。
 
-当前版本：`v4.0.0`
+当前版本：`v4.1.0`
 
 ## 更新日志
 
 README 中仅保留最近 5 条版本摘要，完整历史见 [CHANGELOG.md](./CHANGELOG.md)。
+
+### v4.1.0
+
+- 补齐第 1 阶段 PixEz 能力：`ranking`、`recommended`、`related`、`ugoira`
+- 新增 `/pixiv ranking`、`/pixiv recommended`、`/pixiv related`、`/pixiv ugoira`
+- 补充第 1 阶段测试与迁移矩阵文档，明确 PixEz 非 UI 能力的已对齐/未对齐状态
 
 ### v4.0.0
 
@@ -29,11 +35,6 @@ README 中仅保留最近 5 条版本摘要，完整历史见 [CHANGELOG.md](./C
 - 修复 `pixiv_command` 触发 Pixiv 请求时，内建客户端未兼容历史 `bypass_mode` 关键字参数而导致直接抛异常的问题
 - `PixivClientFacade` 现已兼容旧调用方式，并补充回归测试覆盖这条链路
 
-### v3.0.0
-
-- 插件运行时已切换为内建 Pixiv 客户端分层实现，`main.py` / `commands.py` 不再直接调用 `pixivSDK.py`
-- 新增 `infrastructure.pixiv_client`、`domain` 与 `plugin.entry` 结构，统一承载 PixEz 对齐的认证、App API、图片下载和 DNS/SNI 逻辑
-
 ## 当前能力
 
 - `/pixiv login <refresh_token>`
@@ -41,6 +42,10 @@ README 中仅保留最近 5 条版本摘要，完整历史见 [CHANGELOG.md](./C
 - `/pixiv id a <user_id>`
 - `/pixiv search <keyword>`
 - `/pixiv searchuser <keyword>`
+- `/pixiv ranking [mode=day] [date=YYYY-MM-DD]`
+- `/pixiv recommended [type=illust|manga|user]`
+- `/pixiv related <illust_id>`
+- `/pixiv ugoira <illust_id> [download=true|false]`
 - `/pixiv random [tag=标签] [restrict=public|private] [pages=1-8]`
 - `/pixiv quality <small|medium|original>`
 - `/pixiv dns`
@@ -52,7 +57,7 @@ README 中仅保留最近 5 条版本摘要，完整历史见 [CHANGELOG.md](./C
 - [config_manager.py](/Users/guozimier/Downloads/AstrBot/data/plugins/astrbot_plugin_pixivdirect/config_manager.py)：Token、偏好设置与下载索引持久化
 - [image_handler.py](/Users/guozimier/Downloads/AstrBot/data/plugins/astrbot_plugin_pixivdirect/image_handler.py)：图片下载与 ugoira 渲染
 - [infrastructure/pixiv_client.py](/Users/guozimier/Downloads/AstrBot/data/plugins/astrbot_plugin_pixivdirect/infrastructure/pixiv_client.py)：面向插件的 PixEz 客户端入口
-- [infrastructure/pixez/](/Users/guozimier/Downloads/AstrBot/data/plugins/astrbot_plugin_pixivdirect/infrastructure/pixez)：按 PixEz 拆分出的 host map、传输层与 facade
+- [PIXEZ_MIGRATION_MATRIX.md](/Users/guozimier/Downloads/AstrBot/data/plugins/astrbot_plugin_pixivdirect/PIXEZ_MIGRATION_MATRIX.md)：PixEz 非 UI 能力迁移矩阵
 
 ## 使用方式
 

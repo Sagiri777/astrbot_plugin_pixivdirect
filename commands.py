@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+from pathlib import Path
 from typing import Any
 
 from astrbot.api.event import AstrMessageEvent
@@ -18,8 +20,12 @@ from .infrastructure.pixiv_client import pick_illust_image_urls
 from .utils import (
     format_illust_detail,
     format_random_caption,
+    format_ranking_illusts,
+    format_recommended_illusts,
+    format_related_illusts,
     format_search_illusts,
     format_search_users,
+    format_ugoira_metadata,
     format_user_detail,
     help_text,
     parse_key_value_tokens,
@@ -40,6 +46,26 @@ class CommandHandler:
         self._cache = cache_manager
         self._image = image_handler
         self._pixiv_call = pixiv_call_func
+
+    async def _safe_pixiv_call(
+        self,
+        action: str,
+        params: dict[str, Any],
+        *,
+        refresh_token: str | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return await self._pixiv_call(
+                action,
+                params,
+                refresh_token=refresh_token,
+            )
+        except Exception as exc:
+            return {
+                "ok": False,
+                "status": "exception",
+                "error": {"message": str(exc)},
+            }
 
     async def handle_help(self, event: AstrMessageEvent):
         yield event.plain_result(help_text())
@@ -155,6 +181,158 @@ class CommandHandler:
         payload = result.get("data") or {}
         formatter = format_search_users if user_search else format_search_illusts
         yield event.plain_result(formatter(payload))
+
+    async def handle_ranking(self, event: AstrMessageEvent, tokens: list[str]):
+        token = self._config.get_user_token(user_key(event))
+        if not token:
+            yield event.plain_result("请先登录：/pixiv login <refresh_token>")
+            return
+
+        plain_tokens, kv_tokens = parse_key_value_tokens(tokens[1:])
+        mode = kv_tokens.get("mode") or (plain_tokens[0] if plain_tokens else "day")
+        date = kv_tokens.get("date")
+        params: dict[str, Any] = {"mode": mode, "filter": "for_android"}
+        if date:
+            params["date"] = date
+
+        result = await self._safe_pixiv_call(
+            "illust_ranking",
+            params,
+            refresh_token=token,
+        )
+        if not result.get("ok"):
+            yield event.plain_result(self._image.format_pixiv_error(result))
+            return
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        data["mode"] = mode
+        yield event.plain_result(format_ranking_illusts(data))
+
+    async def handle_recommended(self, event: AstrMessageEvent, tokens: list[str]):
+        token = self._config.get_user_token(user_key(event))
+        if not token:
+            yield event.plain_result("请先登录：/pixiv login <refresh_token>")
+            return
+
+        _, kv_tokens = parse_key_value_tokens(tokens[1:])
+        recommend_type = kv_tokens.get("type", "illust").lower()
+        if recommend_type == "illust":
+            action = "illust_recommended"
+            params: dict[str, Any] = {}
+        elif recommend_type == "manga":
+            action = "/v1/manga/recommended"
+            params = {"filter": "for_ios", "include_ranking_label": "true"}
+        elif recommend_type == "user":
+            action = "/v1/user/recommended"
+            params = {"filter": "for_android"}
+        else:
+            yield event.plain_result("type 仅支持 illust / manga / user")
+            return
+
+        result = await self._safe_pixiv_call(action, params, refresh_token=token)
+        if not result.get("ok"):
+            yield event.plain_result(self._image.format_pixiv_error(result))
+            return
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        yield event.plain_result(
+            format_recommended_illusts(data, recommend_type=recommend_type)
+        )
+
+    async def handle_related(self, event: AstrMessageEvent, tokens: list[str]):
+        token = self._config.get_user_token(user_key(event))
+        if not token:
+            yield event.plain_result("请先登录：/pixiv login <refresh_token>")
+            return
+        if len(tokens) < 2 or not tokens[1].isdigit():
+            yield event.plain_result("用法：/pixiv related <illust_id>")
+            return
+
+        result = await self._safe_pixiv_call(
+            "illust_related",
+            {"illust_id": int(tokens[1]), "filter": "for_android"},
+            refresh_token=token,
+        )
+        if not result.get("ok"):
+            yield event.plain_result(self._image.format_pixiv_error(result))
+            return
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        yield event.plain_result(format_related_illusts(data))
+
+    async def handle_ugoira(self, event: AstrMessageEvent, tokens: list[str]):
+        token = self._config.get_user_token(user_key(event))
+        if not token:
+            yield event.plain_result("请先登录：/pixiv login <refresh_token>")
+            return
+        if len(tokens) < 2 or not tokens[1].isdigit():
+            yield event.plain_result(
+                "用法：/pixiv ugoira <illust_id> [download=true|false]"
+            )
+            return
+
+        _, kv_tokens = parse_key_value_tokens(tokens[2:])
+        should_download = kv_tokens.get("download", "true").lower() not in {
+            "false",
+            "0",
+            "no",
+            "off",
+        }
+        illust_id = int(tokens[1])
+
+        metadata_result = await self._safe_pixiv_call(
+            "ugoira_metadata",
+            {"illust_id": illust_id},
+            refresh_token=token,
+        )
+        if not metadata_result.get("ok"):
+            yield event.plain_result(self._image.format_pixiv_error(metadata_result))
+            return
+        data = (
+            metadata_result.get("data")
+            if isinstance(metadata_result.get("data"), dict)
+            else {}
+        )
+        yield event.plain_result(format_ugoira_metadata(data))
+
+        if not should_download:
+            return
+
+        metadata = (
+            data.get("ugoira_metadata")
+            if isinstance(data.get("ugoira_metadata"), dict)
+            else {}
+        )
+        zip_urls = (
+            metadata.get("zip_urls")
+            if isinstance(metadata.get("zip_urls"), dict)
+            else {}
+        )
+        zip_url = ""
+        for key in ("original", "medium"):
+            candidate = zip_urls.get(key)
+            if isinstance(candidate, str) and candidate:
+                zip_url = candidate
+                break
+        frames = (
+            metadata.get("frames") if isinstance(metadata.get("frames"), list) else []
+        )
+        if not zip_url or not frames:
+            yield event.plain_result("Ugoira 元数据不完整，无法下载。")
+            return
+
+        try:
+            zip_path = await self._image.download_ugoira_zip_to_cache(
+                zip_url,
+                refresh_token=token,
+                file_stem=f"ugoira_{illust_id}",
+            )
+            gif_path = str(
+                Path(zip_path).with_name(
+                    f"ugoira_{illust_id}_{int(time.time() * 1000)}.gif"
+                )
+            )
+            self._image.render_ugoira_to_gif(zip_path, frames, gif_path)
+            yield event.make_result().message("").file_image(gif_path)
+        except Exception as exc:
+            yield event.plain_result(f"Ugoira 下载或渲染失败：{exc}")
 
     async def handle_random(self, event: AstrMessageEvent, tokens: list[str]):
         token = self._config.get_user_token(user_key(event))

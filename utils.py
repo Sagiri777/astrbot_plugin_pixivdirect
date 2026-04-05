@@ -124,3 +124,89 @@ def format_random_caption(illust: dict[str, Any]) -> str:
             f"标签：{' '.join(tags) if tags else '无'}",
         ]
     )
+
+
+def _format_illust_lines(
+    title: str,
+    illusts: list[dict[str, Any]],
+    *,
+    limit: int = 5,
+) -> str:
+    if not illusts:
+        return f"{title}\n无结果。"
+    lines = [title]
+    for illust in illusts[:limit]:
+        user = illust.get("user") if isinstance(illust.get("user"), dict) else {}
+        lines.append(
+            f"{illust.get('id', '-')} | {illust.get('title', '未知标题')} | {user.get('name', '未知作者')}"
+        )
+    return "\n".join(lines)
+
+
+def format_ranking_illusts(data: dict[str, Any]) -> str:
+    illusts = data.get("illusts") if isinstance(data.get("illusts"), list) else []
+    mode = data.get("mode") if isinstance(data.get("mode"), str) else "day"
+    return _format_illust_lines(f"排行榜（{mode}）", illusts)
+
+
+def format_recommended_illusts(data: dict[str, Any], *, recommend_type: str) -> str:
+    if recommend_type == "user":
+        previews = (
+            data.get("user_previews")
+            if isinstance(data.get("user_previews"), list)
+            else []
+        )
+        if not previews:
+            return "推荐用户作品\n无结果。"
+        lines = ["推荐用户作品"]
+        for preview in previews[:5]:
+            if not isinstance(preview, dict):
+                continue
+            user = preview.get("user") if isinstance(preview.get("user"), dict) else {}
+            lines.append(
+                f"{user.get('id', '-')} | {user.get('name', '未知作者')} | {user.get('account', '')}"
+            )
+        return "\n".join(lines)
+
+    illusts = data.get("illusts") if isinstance(data.get("illusts"), list) else []
+    type_label = {
+        "illust": "推荐插画",
+        "manga": "推荐漫画",
+    }.get(recommend_type, "推荐结果")
+    return _format_illust_lines(type_label, illusts)
+
+
+def format_related_illusts(data: dict[str, Any]) -> str:
+    illusts = data.get("illusts") if isinstance(data.get("illusts"), list) else []
+    return _format_illust_lines("相关推荐", illusts)
+
+
+def format_ugoira_metadata(data: dict[str, Any]) -> str:
+    metadata = (
+        data.get("ugoira_metadata")
+        if isinstance(data.get("ugoira_metadata"), dict)
+        else {}
+    )
+    frames = metadata.get("frames") if isinstance(metadata.get("frames"), list) else []
+    zip_urls = (
+        metadata.get("zip_urls") if isinstance(metadata.get("zip_urls"), dict) else {}
+    )
+    zip_url = ""
+    for key in ("original", "medium"):
+        candidate = zip_urls.get(key)
+        if isinstance(candidate, str) and candidate:
+            zip_url = candidate
+            break
+    total_delay = sum(
+        int(frame.get("delay", 0))
+        for frame in frames
+        if isinstance(frame, dict) and isinstance(frame.get("delay"), int)
+    )
+    return "\n".join(
+        [
+            "Ugoira 元数据：",
+            f"帧数：{len(frames)}",
+            f"总时长(ms)：{total_delay}",
+            f"ZIP：{zip_url or '无'}",
+        ]
+    )

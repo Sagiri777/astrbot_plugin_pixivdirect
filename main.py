@@ -80,6 +80,22 @@ class PixivDirectPlugin(Star):
             ):
                 yield result
             return
+        if subcommand == "ranking":
+            async for result in self._commands.handle_ranking(event, tokens):
+                yield result
+            return
+        if subcommand == "recommended":
+            async for result in self._commands.handle_recommended(event, tokens):
+                yield result
+            return
+        if subcommand == "related":
+            async for result in self._commands.handle_related(event, tokens):
+                yield result
+            return
+        if subcommand == "ugoira":
+            async for result in self._commands.handle_ugoira(event, tokens):
+                yield result
+            return
         if subcommand == "random":
             async for result in self._commands.handle_random(event, tokens):
                 yield result
