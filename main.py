@@ -8,7 +8,7 @@ from typing import Any
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, filter
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star
 from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 from .cache_manager import CacheManager
@@ -33,7 +33,6 @@ from .infrastructure.pixiv_client import PixivClientFacade, refresh_pixiv_host_m
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "3.0.0")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)

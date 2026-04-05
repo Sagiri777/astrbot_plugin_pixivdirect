@@ -4,7 +4,7 @@
 
 **PixivDirect** 是一个 AstrBot 插件，用于直连访问 Pixiv，支持查询作品详情、作者信息和随机获取收藏图片。
 
-- **版本**: v1.9.0
+- **版本**: v3.0.0
 - **作者**: Sagiri777
 - **AstrBot 要求**: >= v4.5.0
 - **仓库**: https://github.com/Sagiri777/astrbot_plugin_pixivdirect
@@ -18,12 +18,21 @@
 ```
 astrbot_plugin_pixivdirect/
 ├── __init__.py              # 包初始化
-├── main.py                  # 插件入口，命令路由
-├── commands.py              # 命令处理逻辑
+├── main.py                  # 插件主类与生命周期编排
+├── commands.py              # 命令处理逻辑（仍待继续拆分）
 ├── config_manager.py        # 配置文件管理
 ├── cache_manager.py         # 缓存池管理
 ├── image_handler.py         # 图片下载与处理
-├── pixivSDK.py              # Pixiv API 封装（同步）
+├── domain/                  # 领域模型与错误定义
+│   ├── errors.py
+│   └── models.py
+├── infrastructure/          # 内建 Pixiv 客户端与基础设施
+│   ├── __init__.py
+│   └── pixiv_client.py
+├── plugin/                  # 稳定插件入口
+│   ├── __init__.py
+│   └── entry.py
+├── pixivSDK.py              # 历史迁移对照文件，运行时不再调用
 ├── utils.py                 # 格式化与工具函数
 ├── emoji_reaction.py        # 表情回应处理
 ├── constants.py             # 常量与配置项
@@ -36,13 +45,16 @@ astrbot_plugin_pixivdirect/
 ### 模块依赖关系
 
 ```
+plugin/entry.py
+  └── main.py (PixivDirectPlugin)
+
 main.py
   ├── config_manager.py (ConfigManager)
   ├── cache_manager.py (CacheManager)
   ├── image_handler.py (ImageHandler)
   ├── commands.py (CommandHandler)
   ├── emoji_reaction.py (EmojiReactionHandler)
-  ├── pixivSDK.py (pixiv)
+  ├── infrastructure/pixiv_client.py (PixivClientFacade)
   └── utils.py (format_*, help_text)
 
 commands.py
@@ -50,6 +62,7 @@ commands.py
   ├── cache_manager.py
   ├── image_handler.py
   ├── emoji_reaction.py
+  ├── infrastructure/pixiv_client.py
   └── utils.py
 
 cache_manager.py
@@ -61,12 +74,13 @@ cache_manager.py
 
 ## 核心类说明
 
-### 1. PixivDirectPlugin (main.py:32-342)
+### 1. PixivDirectPlugin (main.py)
 
 插件主类，继承自 `Star`。
 
 **职责：**
 - 初始化所有管理器
+- 初始化内建 Pixiv 客户端
 - 处理命令路由（`/pixiv` 子命令分发）
 - 管理 DNS 刷新调度
 - 运行空闲缓存循环
@@ -74,10 +88,10 @@ cache_manager.py
 **关键方法：**
 - `initialize()` - 插件初始化
 - `pixiv_command()` - 主命令入口，分发子命令
-- `_pixiv_call()` - 统一的 Pixiv API 调用封装
+- `_pixiv_call()` - 统一的 Pixiv API 调用封装，底层改走 `PixivClientFacade`
 - `_idle_cache_loop()` - 空闲缓存后台任务
 
-### 2. CommandHandler (commands.py:26-1139)
+### 2. CommandHandler (commands.py)
 
 命令处理逻辑，处理所有用户交互。
 
@@ -88,6 +102,7 @@ cache_manager.py
 - 配置管理（share, r18, unique, quality, cache, config）
 - 群聊屏蔽标签管理
 - 频率限制
+- 仍是当前最大的待拆分模块，后续新增逻辑应优先考虑继续向应用层拆分
 
 **关键方法：**
 - `handle_login()` - 处理登录命令
@@ -96,7 +111,7 @@ cache_manager.py
 - `rate_limit_message()` - 频率限制检查
 - `should_send_image()` - R-18 和屏蔽标签过滤
 
-### 3. ConfigManager (config_manager.py:11-623)
+### 3. ConfigManager (config_manager.py)
 
 配置文件管理，所有持久化数据的读写入口。
 
@@ -117,7 +132,7 @@ cache_manager.py
 - `random_cache: dict[str, dict[str, list]]` - 统一缓存池
 - `cache_dir: Path` - 图片缓存目录
 
-### 4. CacheManager (cache_manager.py:12-281)
+### 4. CacheManager (cache_manager.py)
 
 缓存操作管理。
 
@@ -134,7 +149,7 @@ cache_manager.py
 - `is_r18_item()` - 检测 R-18 内容
 - `parse_random_filter()` - 解析筛选参数
 
-### 5. ImageHandler (image_handler.py:19-244)
+### 5. ImageHandler (image_handler.py)
 
 图片下载和处理。
 
@@ -149,19 +164,24 @@ cache_manager.py
 - `render_ugoira_to_gif()` - 渲染动图为 GIF
 - `format_pixiv_error()` - 格式化 API 错误
 
-### 6. pixivSDK.py
+### 6. PixivClientFacade / infrastructure/pixiv_client.py
 
-Pixiv API 封装（同步实现，通过 `asyncio.to_thread` 调用）。
+插件当前运行时使用的 Pixiv 接入层，按本地 `pixez-flutter` 行为重建。
 
-**主要功能：**
-- OAuth 认证流程
-- API 请求封装
-- 图片下载
-- DNS 代理支持（PixEz/Accesser 风格）
+**职责：**
+- OAuth refresh token 换 access token
+- App API / Web 搜索请求封装
+- 图片与 ugoira 下载
+- PixEz 风格 DNS 覆盖、禁用 SNI 与 host map 刷新
 
-**关键函数：**
-- `pixiv()` - 统一 API 入口
-- 支持的 action: `illust_detail`, `user_detail`, `user_bookmarks_illust`, `random_bookmark_image`, `image`, `ugoira_metadata`, `ugoira_zip`
+**关键组件：**
+- `PixivTransport` - Session、请求头、超时、重试、SNI / DNS 控制
+- `PixivAuthClient` - Token 刷新
+- `PixivApiClient` - 作品、作者、搜索、收藏元数据接口
+- `PixivImageClient` - 图片与动图二进制下载
+- `PixivClientFacade` - 面向插件主流程的统一入口
+
+> `pixivSDK.py` 仅保留作历史迁移对照，运行时不再调用；若遇到 Pixiv 接入问题，优先参考本地 `pixez-flutter/` 与 `infrastructure/pixiv_client.py`。
 
 ---
 
@@ -191,7 +211,7 @@ Pixiv API 封装（同步实现，通过 `asyncio.to_thread` 调用）。
 
    from astrbot.api import logger
    from astrbot.api.event import AstrMessageEvent, filter
-   from astrbot.api.star import Context, Star, register
+   from astrbot.api.star import Context, Star
 
    from .cache_manager import CacheManager
    from .config_manager import ConfigManager
@@ -208,8 +228,10 @@ Pixiv API 封装（同步实现，通过 `asyncio.to_thread` 调用）。
 
 1. **同步代码转异步**
    ```python
-   # 将同步的 pixivSDK 调用转为异步
-   result = await asyncio.to_thread(pixiv, action, params, **kwargs)
+   # 将同步的内建 Pixiv client 调用转为异步
+   result = await asyncio.to_thread(
+       self._pixiv_client.call_action, action, params, **kwargs
+   )
    ```
 
 2. **锁的使用**
@@ -439,7 +461,7 @@ grep -E "\[pixivdirect\]" {astrbot_data_path}/logs/astrbot.log
 
 当 AI 需要在本地复现 `/pixiv search ...`、`/pixiv searchuser ...` 等网络问题时，优先使用“模拟插件命令流，但不模拟文件读取”的方式：
 
-1. 使用脚本模拟 `main.py -> CommandHandler -> _pixiv_call -> pixivSDK.py` 的命令解析、参数构造、DNS 重试和搜索兜底逻辑。
+1. 使用脚本模拟 `main.py -> CommandHandler -> _pixiv_call -> infrastructure/pixiv_client.py` 的命令解析、参数构造、DNS 重试和搜索兜底逻辑。
 2. 不要为了这类网络调试去构造完整的 `ConfigManager` 持久化数据、插件数据目录或 `user_refresh_tokens.json` 读取流程。
 3. Token、关键词、页码等调试输入应通过命令行参数、环境变量，或脚本内显式传参提供，而不是依赖插件运行时文件读取。
 4. 若沙箱阻止外网请求，应重新以提权方式执行同一条测试命令，不要把沙箱报错误判为 Pixiv 接口本身错误。
@@ -449,7 +471,7 @@ grep -E "\[pixivdirect\]" {astrbot_data_path}/logs/astrbot.log
    - 搜索参数是否和插件真实发送的一致
    - DNS 重试和运行时解析是否生效
 
-推荐使用仓库内的 `scripts/manual_search_test.py` 作为这类本地调试的入口，但重点是“模拟插件搜索链路”，而不是依赖真实插件配置文件。
+推荐使用仓库内的调试脚本作为这类本地调试的入口，但重点是“模拟插件搜索链路”，而不是依赖真实插件配置文件。
 
 ### Token 调试输入
 
@@ -527,7 +549,7 @@ python3 scripts/getReadmeVersionCount.py
 
 采用 **语义化版本** (Semantic Versioning)：`MAJOR.MINOR.PATCH`
 
-当前版本：`v1.9.0`
+当前版本：`v3.0.0`
 
 ### 更新规则
 
@@ -577,14 +599,9 @@ python3 scripts/getReadmeVersionCount.py
    version: v1.7.0  # 更新版本号
    ```
 
-2. **`main.py`** - 更新 `@register` 装饰器
-   ```python
-   @register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.7.0")
-   ```
+2. **`CHANGELOG.md`** - 创建/更新变更日志（见下方详细说明）
 
-3. **`CHANGELOG.md`** - 创建/更新变更日志（见下方详细说明）
-
-4. **`README.md`** - 更新版本号和更新日志
+3. **`README.md`** - 更新版本号和更新日志
    ```markdown
    ### v1.7.0
    - 新增 xxx 功能
@@ -669,9 +686,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 # 2. 根据更新类型确定新版本号
 # 3. 更新 CHANGELOG.md（将 Unreleased 变更移到新版本下）
 # 4. 更新 metadata.yaml
-# 5. 更新 main.py 的 @register 装饰器
-# 6. 更新 README.md 更新日志
-# 7. 运行 ruff 检查
+# 5. 更新 README.md 更新日志
+# 6. 运行 ruff 检查
 ruff format . && ruff check .
 # 8. 提交代码
 git add -A && git commit -m "feat: add new feature (v1.7.0)"
