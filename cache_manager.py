@@ -168,11 +168,7 @@ class CacheManager:
             if not isinstance(item, dict):
                 continue
             illust_id = item.get("illust_id")
-            if (
-                exclude_sent
-                and isinstance(illust_id, int)
-                and illust_id in sent_ids
-            ):
+            if exclude_sent and isinstance(illust_id, int) and illust_id in sent_ids:
                 continue
             if filter_params and not self._item_matches_filter(item, filter_params):
                 continue
@@ -184,7 +180,11 @@ class CacheManager:
         return random.choice(candidates)
 
     def count_matching_metadata_items(
-        self, user_key: str, *, restrict: str = "public", filter_params: dict[str, Any] | None = None
+        self,
+        user_key: str,
+        *,
+        restrict: str = "public",
+        filter_params: dict[str, Any] | None = None,
     ) -> int:
         user_cache = self._config.bookmark_metadata_cache.get(user_key, {})
         restrict_cache = user_cache.get(str(restrict or "public").strip().lower(), {})

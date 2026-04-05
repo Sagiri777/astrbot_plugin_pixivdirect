@@ -44,12 +44,6 @@ HOST_ALIAS_MAP: dict[str, str] = {
     "s.pximg.net": "pximg.net",
 }
 
-# PixEz 2026-04-02 起的策略调整：App API 保留域名级 TLS/SNI，仅覆盖 DNS 到候选 IP。
-# 图片 CDN 仍继续使用固定 IP + 禁用 SNI。
-PIXEZ_DOMAIN_SNI_HOSTS: set[str] = {
-    "app-api.pixiv.net",
-}
-
 PIXIV_HASH_SALT = "28c1fdd170a5204386cb1313c7077b34f83e4aaf4aa829ce78c231e05b0bae2c"
 PIXIV_CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
 PIXIV_CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
@@ -545,18 +539,27 @@ def refresh_pixiv_host_map(
     dns_cache_file: str = ".pixiv_host_map.json",
     dns_timeout: int = 3,
     proxy: str | None = None,
+    hosts: list[str] | None = None,
 ) -> dict[str, str]:
     """Refresh PixEz-style host cache via DoH without requiring Pixiv auth."""
     proxies = {"http": proxy, "https": proxy} if proxy else None
     session = _get_session()
+    base_map = {
+        host: PIXEZ_HOST_MAP[host]
+        for host in (hosts or list(PIXEZ_HOST_MAP.keys()))
+        if host in PIXEZ_HOST_MAP
+    }
     host_map = _refresh_pixez_hosts_via_dns(
-        base_map=dict(PIXEZ_HOST_MAP),
+        base_map=base_map,
         doh_server=dns_server,
         timeout=dns_timeout,
         session=session,
         proxies=proxies,
     )
-    _save_host_map_file(dns_cache_file, host_map)
+    persisted_host_map = dict(PIXEZ_HOST_MAP)
+    persisted_host_map.update(_load_host_map_file(dns_cache_file))
+    persisted_host_map.update(host_map)
+    _save_host_map_file(dns_cache_file, persisted_host_map)
     _drop_runtime_dns_cache_for_hosts(
         list(host_map.keys()),
         doh_server=dns_server,
@@ -935,7 +938,7 @@ def pixiv(
     refresh_token: str | None = None,
     access_token: str | None = None,
     bypass_sni: bool = True,
-    bypass_mode: str = "auto",
+    bypass_mode: str = "pixez",
     accept_language: str = "zh-CN",
     proxy: str | None = None,
     timeout: int = 30,
@@ -961,9 +964,9 @@ def pixiv(
     params = params or {}
     proxies = {"http": proxy, "https": proxy} if proxy else None
     current_user_id: int | None = None
-    normalized_bypass_mode = str(bypass_mode or "auto").strip().lower()
-    if normalized_bypass_mode not in {"auto", "pixez", "accesser"}:
-        normalized_bypass_mode = "auto"
+    normalized_bypass_mode = str(bypass_mode or "pixez").strip().lower()
+    if normalized_bypass_mode not in {"pixez", "accesser"}:
+        normalized_bypass_mode = "pixez"
     search_budget_enabled = (
         action in {"search_illust", "search_user"} and runtime_dns_resolve
     )
@@ -1215,10 +1218,6 @@ def pixiv(
         if has_proxy:
             return _do_request()
 
-        allow_pixez = normalized_bypass_mode in {"auto", "pixez"}
-        allow_accesser = normalized_bypass_mode in {"auto", "accesser"}
-
-        # `auto` 保持当前混合回退顺序；`pixez` 与 `accesser` 则会只启用对应分支。
         ip_candidates: list[str] = []
         cached_ip = host_map.get(req_host)
         if cached_ip and cached_ip not in ip_candidates:
@@ -1227,7 +1226,7 @@ def pixiv(
         if builtin_ip and builtin_ip not in ip_candidates:
             ip_candidates.append(builtin_ip)
 
-        if runtime_dns_resolve:
+        if runtime_dns_resolve and not ip_candidates:
             live_cache_key = f"{req_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
             live_ips = _get_runtime_dns_cache(live_cache_key)
             if live_ips is None:
@@ -1240,70 +1239,53 @@ def pixiv(
                     max_doh_servers=None,
                 )
                 _set_runtime_dns_cache(live_cache_key, live_ips)
-            ranked_live_ips, _ = _rank_ips_by_latency(
-                live_ips, timeout=max(0.5, connect_probe_timeout)
-            )
-            for ip in ranked_live_ips:
+            for ip in live_ips:
                 if ip not in ip_candidates:
                     ip_candidates.append(ip)
-        ip_candidates = _limit_candidates(ip_candidates, label="runtime DNS")
+        ip_candidates = _limit_candidates(ip_candidates, label="pixez")
 
         last_exc: Exception | None = None
         last_res: requests.Response | None = None
         attempted = False
-        prefer_domain_sni = req_host in PIXEZ_DOMAIN_SNI_HOSTS and not image_mode
         for ip in ip_candidates:
-            if allow_pixez:
-                try:
-                    attempted = True
-                    if prefer_domain_sni:
-                        res = _do_direct_dns_override_request(
-                            req_host,
-                            ip,
-                            verify=False,
-                            disable_sni=False,
-                        )
-                    else:
-                        res = _do_direct_ip_request(
-                            ip,
-                            verify=False,
-                            disable_sni=True,
-                        )
-                    last_res = res
-                    if res.ok:
-                        return res
-                    if (
-                        runtime_dns_resolve
-                        and allow_accesser
-                        and res.status_code in retryable_bypass_statuses
-                    ):
-                        if _consume_retryable_failure("status", candidate=ip):
-                            stop_retry_iteration = True
-                            break
-                        logger.warning(
-                            "[pixivdirect] %s returned status %s via PixEz-style candidate %s, trying Accesser-style fallback",
-                            action,
-                            res.status_code,
-                            ip,
-                        )
-                    else:
-                        return res
-                except (
-                    RequestsConnectionError,
-                    RequestsTimeout,
-                    RequestsSSLError,
-                ) as exc:
-                    last_exc = exc
-                    logger.warning(
-                        "[pixivdirect] %s failed on PixEz-style candidate %s with bypass_mode=%s error=%s",
-                        action,
-                        ip,
-                        normalized_bypass_mode,
-                        exc,
-                    )
-                    if _consume_retryable_failure("network error", candidate=ip):
+            try:
+                attempted = True
+                res = _do_direct_dns_override_request(
+                    req_host,
+                    ip,
+                    verify=False,
+                    disable_sni=True,
+                )
+                last_res = res
+                if res.ok:
+                    return res
+                if runtime_dns_resolve and res.status_code in retryable_bypass_statuses:
+                    if _consume_retryable_failure("status", candidate=ip):
                         stop_retry_iteration = True
                         break
+                    logger.warning(
+                        "[pixivdirect] %s returned status %s via PixEz-style candidate %s, trying accessor-backup fallback",
+                        action,
+                        res.status_code,
+                        ip,
+                    )
+                else:
+                    return res
+            except (
+                RequestsConnectionError,
+                RequestsTimeout,
+                RequestsSSLError,
+            ) as exc:
+                last_exc = exc
+                logger.warning(
+                    "[pixivdirect] %s failed on PixEz-style candidate %s error=%s",
+                    action,
+                    ip,
+                    exc,
+                )
+                if _consume_retryable_failure("network error", candidate=ip):
+                    stop_retry_iteration = True
+                    break
 
             if stop_retry_iteration:
                 break
@@ -1314,13 +1296,12 @@ def pixiv(
                 action,
             )
 
-        # 仅在主域名候选全部失败后，再尝试 Accesser 风格的别名域名解析。
         alias_host = HOST_ALIAS_MAP.get(req_host)
         if (
             alias_host
             and runtime_dns_resolve
-            and allow_accesser
             and not stop_retry_iteration
+            and normalized_bypass_mode == "pixez"
         ):
             alias_cache_key = f"{alias_host}|{dns_server}|{dns_timeout}|{proxy or ''}"
             alias_ips = _get_runtime_dns_cache(alias_cache_key)
@@ -1356,7 +1337,7 @@ def pixiv(
                             stop_retry_iteration = True
                             break
                         logger.warning(
-                            "[pixivdirect] %s returned status %s via Accesser-style alias %s candidate %s, trying next candidate",
+                            "[pixivdirect] %s returned status %s via accessor-backup alias %s candidate %s, trying next candidate",
                             action,
                             res.status_code,
                             alias_host,
@@ -1371,11 +1352,10 @@ def pixiv(
                 ) as exc:
                     last_exc = exc
                     logger.warning(
-                        "[pixivdirect] %s failed on Accesser-style alias %s candidate %s with bypass_mode=%s error=%s",
+                        "[pixivdirect] %s failed on accessor-backup alias %s candidate %s error=%s",
                         action,
                         alias_host,
                         ip,
-                        normalized_bypass_mode,
                         exc,
                     )
                     if _consume_retryable_failure("network error", candidate=ip):

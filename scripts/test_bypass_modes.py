@@ -104,10 +104,8 @@ class RequestThrottler:
 
 
 DEFAULT_MODES: tuple[ModeConfig, ...] = (
-    ModeConfig("auto", "auto", True),
     ModeConfig("pixez", "pixez", True),
-    ModeConfig("accesser", "accesser", True),
-    ModeConfig("direct", "auto", False),
+    ModeConfig("direct", "pixez", False),
 )
 
 

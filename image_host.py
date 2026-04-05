@@ -31,7 +31,9 @@ class ImageHostHandler:
 
     @staticmethod
     def is_enabled(config: dict[str, Any]) -> bool:
-        return bool(config.get("enabled")) and bool(str(config.get("endpoint") or "").strip())
+        return bool(config.get("enabled")) and bool(
+            str(config.get("endpoint") or "").strip()
+        )
 
     @classmethod
     def _upload_sync(cls, image_path: str, config: dict[str, Any]) -> str | None:
@@ -72,7 +74,9 @@ class ImageHostHandler:
         payload = response.json()
         url = cls._extract_by_path(payload, success_path)
         if not url:
-            raise RuntimeError(f"Image host success_path 未命中有效 URL: {success_path}")
+            raise RuntimeError(
+                f"Image host success_path 未命中有效 URL: {success_path}"
+            )
         return url
 
     async def upload_image(self, image_path: str, config: dict[str, Any]) -> str | None:
@@ -81,5 +85,7 @@ class ImageHostHandler:
         try:
             return await asyncio.to_thread(self._upload_sync, image_path, config)
         except Exception as exc:
-            logger.warning("[pixivdirect] Image host upload failed for %s: %s", image_path, exc)
+            logger.warning(
+                "[pixivdirect] Image host upload failed for %s: %s", image_path, exc
+            )
             return None

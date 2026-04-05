@@ -9,8 +9,8 @@ from typing import Any
 from astrbot.api import logger
 
 from .constants import (
-    BYPASS_MODE_AUTO,
     BYPASS_MODE_OPTIONS,
+    BYPASS_MODE_PIXEZ,
     CONFIGURABLE_CONSTANT_ALIASES,
     CONFIGURABLE_CONSTANTS,
     METADATA_CACHE_TTL_HOURS,
@@ -51,7 +51,9 @@ class ConfigManager:
         self._bookmark_metadata_cache_file = (
             plugin_data_dir / "bookmark_metadata_cache.json"
         )
-        self._metadata_warmup_state_file = plugin_data_dir / "metadata_warmup_state.json"
+        self._metadata_warmup_state_file = (
+            plugin_data_dir / "metadata_warmup_state.json"
+        )
         self._random_source_mode_file = plugin_data_dir / "random_source_mode.json"
         self._image_host_config_file = plugin_data_dir / "image_host_config.json"
 
@@ -73,10 +75,10 @@ class ConfigManager:
         self._image_quality_config: dict[str, str] = {}
         self._random_usage_stats: dict[str, dict[str, dict[str, Any]]] = {}
         self._custom_constants: dict[str, Any] = {}
-        self._bypass_mode: str = BYPASS_MODE_AUTO
-        self._bookmark_metadata_cache: dict[str, dict[str, dict[str, dict[str, Any]]]] = (
-            {}
-        )
+        self._bypass_mode: str = BYPASS_MODE_PIXEZ
+        self._bookmark_metadata_cache: dict[
+            str, dict[str, dict[str, dict[str, Any]]]
+        ] = {}
         self._metadata_warmup_state: dict[str, dict[str, Any]] = {}
         self._random_source_mode: dict[str, str] = {}
         self._image_host_config: dict[str, Any] = {
@@ -195,7 +197,9 @@ class ConfigManager:
         return self._random_usage_stats
 
     @property
-    def bookmark_metadata_cache(self) -> dict[str, dict[str, dict[str, dict[str, Any]]]]:
+    def bookmark_metadata_cache(
+        self,
+    ) -> dict[str, dict[str, dict[str, dict[str, Any]]]]:
         return self._bookmark_metadata_cache
 
     @property
@@ -372,9 +376,11 @@ class ConfigManager:
     def _normalize_bypass_mode(value: Any) -> str:
         if isinstance(value, str):
             normalized = value.strip().lower()
+            if normalized in {"auto", "accesser"}:
+                return BYPASS_MODE_PIXEZ
             if normalized in BYPASS_MODE_OPTIONS:
                 return normalized
-        return BYPASS_MODE_AUTO
+        return BYPASS_MODE_PIXEZ
 
     @staticmethod
     def _normalize_search_proxy_config(raw: Any) -> dict[str, Any]:
@@ -510,7 +516,9 @@ class ConfigManager:
         except (TypeError, ValueError):
             x_restrict = 0
 
-        bookmark_restrict = str(item.get("bookmark_restrict") or "public").strip().lower()
+        bookmark_restrict = (
+            str(item.get("bookmark_restrict") or "public").strip().lower()
+        )
         if bookmark_restrict not in {"public", "private"}:
             bookmark_restrict = "public"
 
@@ -816,7 +824,10 @@ class ConfigManager:
 
     def _prune_bookmark_metadata_cache(self) -> None:
         ttl_hours = max(
-            1, int(self.get_constant("metadata_cache_ttl_hours", METADATA_CACHE_TTL_HOURS))
+            1,
+            int(
+                self.get_constant("metadata_cache_ttl_hours", METADATA_CACHE_TTL_HOURS)
+            ),
         )
         cutoff = datetime.now() - timedelta(hours=ttl_hours)
         pruned: dict[str, dict[str, dict[str, dict[str, Any]]]] = {}
@@ -1365,10 +1376,10 @@ class ConfigManager:
     def _load_bypass_mode(self) -> None:
         raw = self._load_json_object(
             self._bypass_mode_file,
-            default={"mode": BYPASS_MODE_AUTO},
+            default={"mode": BYPASS_MODE_PIXEZ},
             create_log_label="bypass mode config",
             invalid_log_message=(
-                "[pixivdirect] Failed to load bypass mode config, using auto."
+                "[pixivdirect] Failed to load bypass mode config, using pixez."
             ),
         )
         self._bypass_mode = self._normalize_bypass_mode(raw.get("mode"))

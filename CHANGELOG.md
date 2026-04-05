@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [2.0.0] - 2026-04-05
+
+### Changed
+- 网络层按本地 `pixez-flutter` 实现重新对齐：App API、OAuth 与图片请求默认统一走 PixEz 风格的 DNS 覆盖、禁用 SNI 与跳过证书校验链路
+- `pixiv_host_map.json` 继续保留为持久化 host 缓存文件；启动阶段默认优先刷新图片 host，管理员手动刷新时再补刷新全部 PixEz host
+- `scripts/test_bypass_modes.py`、手动调试脚本与帮助文档已同步收敛为 `pixez` / `direct` 视角，不再把 `auto`、`accesser` 作为常规模式展示
+
+### Fixed
+- 修复插件此前偏离本地 PixEz clone 的网络行为：App API 不再保留 TLS/SNI，而是改回 PixEz 当前真实使用的禁用 SNI + DNS override 语义
+- 修复历史 `bypass_mode.json` 中的 `auto` / `accesser` 值会继续影响运行模式的问题；旧值现在会自动迁移为 `pixez`
+
 ## [1.12.1] - 2026-04-05
 
 ### Changed

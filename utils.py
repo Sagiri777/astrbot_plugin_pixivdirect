@@ -411,8 +411,8 @@ HELP_MENU: list[dict[str, Any]] = [
                 "usage_key": "bypass",
             },
             {
-                "command": "/pixiv bypass mode auto|pixez|accesser",
-                "description": "切换 PixEz / Accesser / 自动混合模式",
+                "command": "/pixiv bypass mode pixez",
+                "description": "确认使用 PixEz 主模式",
                 "usage_key": "bypass",
             },
             {
@@ -496,9 +496,8 @@ def command_usage(command: str) -> str | None:
         lines.append("- /pixiv config reset [key]  # 重置配置")
     elif command == "bypass":
         lines.append("- /pixiv bypass  # 查看当前绕过模式")
-        lines.append("- /pixiv bypass mode auto  # 使用自动混合模式")
-        lines.append("- /pixiv bypass mode pixez  # 只走 PixEz 式直连")
-        lines.append("- /pixiv bypass mode accesser  # 只走 Accesser 式域名覆盖")
+        lines.append("- /pixiv bypass mode pixez  # 使用 PixEz 主模式")
+        lines.append("- auto / accesser 已废弃，仅保留为内部故障恢复链路")
     elif command == "proxy":
         lines.append("- /pixiv proxy status  # 查看搜索代理状态")
         lines.append("- /pixiv proxy set <proxy_url>  # 设置搜索代理地址")
@@ -510,7 +509,9 @@ def command_usage(command: str) -> str | None:
         lines.append("- /pixiv imagehost status  # 查看图床状态")
         lines.append("- /pixiv imagehost enable true/false  # 启用或禁用图床")
         lines.append("- /pixiv imagehost set endpoint <url>  # 设置上传地址")
-        lines.append("- /pixiv imagehost set success_path <json.path>  # 设置返回 URL 路径")
+        lines.append(
+            "- /pixiv imagehost set success_path <json.path>  # 设置返回 URL 路径"
+        )
         lines.append("- /pixiv imagehost header set <key> <value>  # 设置请求头")
         lines.append("- /pixiv imagehost field set <key> <value>  # 设置表单字段")
         lines.append("- /pixiv imagehost reset  # 重置图床配置")

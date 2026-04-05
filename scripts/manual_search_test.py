@@ -102,7 +102,7 @@ async def _plugin_like_search_call(
     params: dict[str, Any],
     refresh_token: str,
     dns_cache_file: Path,
-    bypass_mode: str = "auto",
+    bypass_mode: str = "pixez",
     proxy: str | None = None,
 ) -> dict[str, Any]:
     call_kwargs = {
@@ -186,7 +186,7 @@ async def _plugin_like_search_user_call(
         params=params,
         refresh_token=refresh_token,
         dns_cache_file=dns_cache_file,
-        bypass_mode="auto",
+        bypass_mode="pixez",
     )
     data = result.get("data")
     if isinstance(data, dict) and isinstance(data.get("user_previews"), list):
@@ -268,8 +268,8 @@ async def _main() -> int:
     )
     parser.add_argument(
         "--bypass-mode",
-        default="auto",
-        choices=["auto", "pixez", "accesser"],
+        default="pixez",
+        choices=["pixez"],
         help="Bypass mode to use for App API requests.",
     )
     args = parser.parse_args()

@@ -165,14 +165,8 @@ EMOJI_MAP: dict[str, int] = {
 
 # Plugin configuration constants
 DISABLE_BYPASS_SNI: bool = False
-BYPASS_MODE_AUTO: str = "auto"
 BYPASS_MODE_PIXEZ: str = "pixez"
-BYPASS_MODE_ACCESSER: str = "accesser"
-BYPASS_MODE_OPTIONS: tuple[str, ...] = (
-    BYPASS_MODE_AUTO,
-    BYPASS_MODE_PIXEZ,
-    BYPASS_MODE_ACCESSER,
-)
+BYPASS_MODE_OPTIONS: tuple[str, ...] = (BYPASS_MODE_PIXEZ,)
 DNS_REFRESH_INTERVAL_SECONDS: float = 24 * 60 * 60
 DNS_REFRESH_RETRY_SECONDS: float = 60
 RANDOM_DOWNLOAD_CONCURRENCY: int = 3

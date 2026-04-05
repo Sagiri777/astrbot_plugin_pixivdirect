@@ -11,7 +11,6 @@ from astrbot.api.event import AstrMessageEvent
 from .cache_manager import CacheManager
 from .config_manager import ConfigManager
 from .constants import (
-    BYPASS_MODE_AUTO,
     BYPASS_MODE_OPTIONS,
     CONFIGURABLE_CONSTANT_ALIASES,
     CONFIGURABLE_CONSTANT_NAMES,
@@ -286,17 +285,13 @@ class CommandHandler:
     def _bypass_mode_label(mode: str) -> str:
         return {
             "disabled": "普通域名模式",
-            "auto": "自动混合模式",
-            "pixez": "PixEz 模式",
-            "accesser": "Accesser 模式",
+            "pixez": "PixEz 主模式",
         }.get(mode, mode)
 
     @classmethod
     def _bypass_mode_summary(cls, mode: str) -> str:
         summaries = {
-            "auto": "先走 PixEz 式直连，再回退到 Accesser 式域名覆盖。",
-            "pixez": "App API 保留域名 SNI 并覆盖到缓存 IP，图片继续走禁用 SNI 的 PixEz 式直连。",
-            "accesser": "只走 Accesser 式域名解析覆盖，不走直连 IP。",
+            "pixez": "App API、OAuth 与图片请求默认走 PixEz 式 DNS 覆盖、禁用 SNI 与跳过证书校验；Accessor 仅在内部故障恢复时备用。",
             "disabled": "完全关闭绕过，直接走普通域名请求。",
         }
         return summaries.get(mode, mode)
@@ -1581,11 +1576,6 @@ class CommandHandler:
                         "如需恢复 PixEz 风格直连，请使用 /pixiv config set disable_bypass_sni false"
                     )
                     return
-                if effective_bypass_mode == "accesser":
-                    yield event.plain_result(
-                        "ℹ️ 当前为 Accesser 模式，请求仍可使用运行时域名覆盖，但不会刷新 PixEz IP 缓存。"
-                    )
-                    return
                 if self._dns_refresh_func:
                     await self._dns_refresh_func()
                 yield event.plain_result(
@@ -1602,12 +1592,10 @@ class CommandHandler:
                         pass
                 if effective_bypass_mode == "disabled":
                     network_mode = "普通域名模式（已禁用 SNI 绕过）"
-                elif effective_bypass_mode == "pixez":
-                    network_mode = "PixEz 模式（App API 保留 SNI，图片禁用 SNI）"
-                elif effective_bypass_mode == "accesser":
-                    network_mode = "Accesser 模式（域名覆盖解析）"
                 else:
-                    network_mode = "自动混合模式（PixEz 直连优先，Accesser 回退）"
+                    network_mode = (
+                        "PixEz 主模式（DNS 覆盖 + 禁用 SNI；Accessor 仅内部备用）"
+                    )
                 yield event.plain_result(
                     f"ℹ️ DNS 刷新状态：\n"
                     f"- 当前网络模式: {network_mode}\n"
@@ -2701,9 +2689,12 @@ class CommandHandler:
         if len(args) >= 3 and args[1].lower() == "mode":
             new_mode = str(args[2]).strip().lower()
             if new_mode not in BYPASS_MODE_OPTIONS:
-                yield event.plain_result(
-                    "❌ 无效模式，请使用 auto / pixez / accesser。"
-                )
+                if new_mode in {"auto", "accesser"}:
+                    yield event.plain_result(
+                        "⚠️ `auto` 和 `accesser` 已废弃；插件现在固定以 PixEz 主模式运行，Accessor 仅在内部故障恢复时备用。"
+                    )
+                    return
+                yield event.plain_result("❌ 无效模式，请使用 pixez。")
                 return
             self._config.set_bypass_mode(new_mode)
             await self._config.save_bypass_mode()
@@ -2718,9 +2709,8 @@ class CommandHandler:
             f"- legacy disable_bypass_sni: {legacy_disabled}\n"
             f"- 已保存模式: {self._bypass_mode_label(stored_mode)} ({stored_mode})\n"
             f"- 当前生效模式: {self._bypass_mode_label(effective_mode)} ({effective_mode})\n"
-            f"- auto: {self._bypass_mode_summary(BYPASS_MODE_AUTO)}\n"
             f"- pixez: {self._bypass_mode_summary('pixez')}\n"
-            f"- accesser: {self._bypass_mode_summary('accesser')}"
+            "- 说明: Accessor 已降级为内部 fallback，不再作为可切换公开模式。"
         )
 
     async def handle_proxy(self, event: AstrMessageEvent, args: list[str]):
