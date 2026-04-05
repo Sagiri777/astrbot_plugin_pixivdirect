@@ -890,30 +890,36 @@ class PixivTransport:
             and last_res is None
             and last_exc is not None
             and not has_proxy
+            and req_host in PIXEZ_HOST_MAP
         ):
-            live_ip_candidates = _build_pixez_ip_candidates(
-                req_host,
-                host_map,
-                runtime_dns_resolve=True,
-                dns_server=dns_server,
-                dns_timeout=dns_timeout,
-                proxy=proxy,
+            refreshed_host_map = _refresh_pixez_hosts_via_dns(
+                base_map={req_host: host_map.get(req_host, PIXEZ_HOST_MAP[req_host])},
+                doh_server=dns_server,
+                timeout=dns_timeout,
                 session=session,
                 proxies=proxies,
             )
-            live_ip_candidates = [
-                ip for ip in live_ip_candidates if ip not in ip_candidates
-            ]
-            if live_ip_candidates:
-                live_res, live_exc = _request_with_ip_candidates(
-                    live_ip_candidates,
+            refreshed_ip = refreshed_host_map.get(req_host)
+            if refreshed_ip and refreshed_ip not in ip_candidates:
+                persisted_host_map = dict(PIXEZ_HOST_MAP)
+                persisted_host_map.update(_load_host_map_file(dns_cache_file))
+                persisted_host_map.update(refreshed_host_map)
+                _save_host_map_file(dns_cache_file, persisted_host_map)
+                _drop_runtime_dns_cache_for_hosts(
+                    [req_host],
+                    doh_server=dns_server,
+                    dns_timeout=dns_timeout,
+                    proxy=proxy,
+                )
+                refreshed_res, refreshed_exc = _request_with_ip_candidates(
+                    [refreshed_ip],
                     retryable_statuses_for_action=retryable_statuses,
                     retryable_failure_budget_for_action=retryable_failure_budget,
                 )
-                if live_res is not None:
-                    return live_res
-                if live_exc is not None:
-                    last_exc = live_exc
+                if refreshed_res is not None:
+                    return refreshed_res
+                if refreshed_exc is not None:
+                    last_exc = refreshed_exc
 
         alias_host = HOST_ALIAS_MAP.get(req_host)
         if (

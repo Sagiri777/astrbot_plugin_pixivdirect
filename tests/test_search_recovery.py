@@ -218,11 +218,12 @@ def test_oauth_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
     assert sni_disabled == [True, True]
 
 
-def test_oauth_timeout_retries_with_runtime_dns_candidate(monkeypatch) -> None:
+def test_oauth_timeout_refreshes_host_map_before_retry(monkeypatch) -> None:
     request_hosts: list[str] = []
     recorded_dns_overrides: list[dict[str, str]] = []
     sni_disabled: list[bool] = []
     oauth_attempts = 0
+    saved_host_maps: list[dict[str, str]] = []
 
     def handler(**kwargs):
         nonlocal oauth_attempts
@@ -252,19 +253,21 @@ def test_oauth_timeout_retries_with_runtime_dns_candidate(monkeypatch) -> None:
         sni_disabled.append(True)
         yield
 
-    def fake_resolve_host_ips(
-        host: str,
+    def fake_refresh_pixez_hosts_via_dns(
         *,
+        base_map: dict[str, str],
         doh_server: str,
         timeout: int,
         session=None,
         proxies=None,
-        max_doh_servers=None,
-    ) -> list[str]:
-        del doh_server, timeout, session, proxies, max_doh_servers
-        if host == "oauth.secure.pixiv.net":
-            return ["210.140.139.200"]
-        return []
+    ) -> dict[str, str]:
+        del doh_server, timeout, session, proxies
+        refreshed = dict(base_map)
+        refreshed["oauth.secure.pixiv.net"] = "210.140.139.200"
+        return refreshed
+
+    def fake_save_host_map_file(_path: str, host_map: dict[str, str]) -> None:
+        saved_host_maps.append(dict(host_map))
 
     session = _FakeSession(handler)
     monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
@@ -272,7 +275,10 @@ def test_oauth_timeout_retries_with_runtime_dns_candidate(monkeypatch) -> None:
     monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
     monkeypatch.setattr(pixiv_client, "_patched_dns_resolution", fake_dns_patch)
     monkeypatch.setattr(pixiv_client, "_without_tls_sni", fake_without_tls_sni)
-    monkeypatch.setattr(pixiv_client, "_resolve_host_ips", fake_resolve_host_ips)
+    monkeypatch.setattr(
+        pixiv_client, "_refresh_pixez_hosts_via_dns", fake_refresh_pixez_hosts_via_dns
+    )
+    monkeypatch.setattr(pixiv_client, "_save_host_map_file", fake_save_host_map_file)
 
     result = pixiv_client.PixivClientFacade().call_action(
         "illust_detail",
@@ -295,6 +301,14 @@ def test_oauth_timeout_retries_with_runtime_dns_candidate(monkeypatch) -> None:
         {"app-api.pixiv.net": "210.140.139.155"},
     ]
     assert sni_disabled == [True, True, True]
+    assert saved_host_maps == [
+        {
+            "app-api.pixiv.net": "210.140.139.155",
+            "oauth.secure.pixiv.net": "210.140.139.200",
+            "i.pximg.net": "210.140.139.133",
+            "s.pximg.net": "210.140.139.133",
+        }
+    ]
 
 
 def test_auth_refresh_forwards_transport_network_kwargs(monkeypatch) -> None:
