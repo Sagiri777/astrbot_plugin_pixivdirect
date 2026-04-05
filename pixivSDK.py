@@ -12,7 +12,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, nullcontext
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
 
@@ -58,7 +58,8 @@ PIXIV_CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
 
 API_BASE = "https://app-api.pixiv.net"
 OAUTH_URL = "https://oauth.secure.pixiv.net/auth/token"
-PIXIV_UA = "PixivAndroidApp/5.0.234 (Android 11; Pixel 5)"
+PIXIV_UA = "PixivAndroidApp/5.0.155 (Android 10.0; Pixel C)"
+PIXIV_OAUTH_UA = "PixivAndroidApp/5.0.155 (Android 6.0; Pixel C)"
 PIXIV_WEB_UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -69,6 +70,9 @@ IMAGE_REFERER = "https://app-api.pixiv.net/"
 PIXIV_APP_FILTER = "for_android"
 PIXIV_WEB_BASE = "https://www.pixiv.net"
 PIXIV_WEB_REFERER = "https://www.pixiv.net/"
+PIXIV_APP_VERSION = "5.0.166"
+PIXIV_API_OS_VERSION = "Android 10.0"
+PIXIV_OAUTH_OS_VERSION = "Android 6.0"
 
 # Process-level caches for runtime DNS resolve.
 _RUN_RESOLVED_IPS: dict[str, list[str]] = {}
@@ -105,7 +109,6 @@ AUTH_OPTIONAL_ACTIONS: set[str] = {
 APP_API_FILTER_ACTIONS: set[str] = {
     "illust_detail",
     "illust_ranking",
-    "illust_recommended",
     "search_illust",
     "search_user",
     "user_detail",
@@ -604,7 +607,9 @@ def _read_refresh_token_file(path: str = ".pixiv_refresh_token") -> str | None:
 
 
 def _pixiv_client_time() -> str:
-    return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+    # Match pixez-flutter's current behavior exactly: it formats local wall-clock
+    # time with a literal +00:00 suffix instead of converting to true UTC first.
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
 
 def _pick_illust_image_url(
@@ -1044,7 +1049,13 @@ def pixiv(
         is_web_request = req_host == "www.pixiv.net"
         merged_headers = {
             "User-Agent": (
-                IMAGE_UA if image_mode else PIXIV_WEB_UA if is_web_request else PIXIV_UA
+                IMAGE_UA
+                if image_mode
+                else PIXIV_WEB_UA
+                if is_web_request
+                else PIXIV_OAUTH_UA
+                if req_host == "oauth.secure.pixiv.net"
+                else PIXIV_UA
             ),
             "Accept-Language": accept_language,
         }
@@ -1063,8 +1074,15 @@ def pixiv(
                 hashlib.md5((now + PIXIV_HASH_SALT).encode("utf-8")).hexdigest(),
             )
             merged_headers.setdefault("App-OS", "Android")
-            merged_headers.setdefault("App-OS-Version", "Android 11")
-            merged_headers.setdefault("App-Version", "5.0.234")
+            merged_headers.setdefault(
+                "App-OS-Version",
+                PIXIV_OAUTH_OS_VERSION
+                if req_host == "oauth.secure.pixiv.net"
+                else PIXIV_API_OS_VERSION,
+            )
+            merged_headers.setdefault("App-Version", PIXIV_APP_VERSION)
+            if req_host == "app-api.pixiv.net":
+                merged_headers.setdefault("Host", "app-api.pixiv.net")
         if with_auth:
             if not access_token:
                 raise ValueError("Missing access_token after auth.")
@@ -1438,8 +1456,8 @@ def pixiv(
                 "X-Client-Time": now,
                 "X-Client-Hash": x_client_hash,
                 "App-OS": "Android",
-                "App-OS-Version": "Android 11",
-                "App-Version": "5.0.234",
+                "App-OS-Version": PIXIV_OAUTH_OS_VERSION,
+                "App-Version": PIXIV_APP_VERSION,
                 "Content-Type": "application/x-www-form-urlencoded",
             },
         )
@@ -1916,16 +1934,16 @@ def pixiv(
     api_params = dict(params)
     if action in APP_API_FILTER_ACTIONS:
         api_params.setdefault("filter", PIXIV_APP_FILTER)
-    if action == "search_illust":
-        if isinstance(api_params.get("include_translated_tag_results"), bool):
-            api_params["include_translated_tag_results"] = (
-                "true" if api_params["include_translated_tag_results"] else "false"
-            )
+    if action == "illust_recommended":
+        api_params.setdefault("filter", "for_ios")
+        api_params.setdefault("include_ranking_label", "true")
+    elif action == "search_illust":
         if isinstance(api_params.get("merge_plain_keyword_results"), bool):
             api_params["merge_plain_keyword_results"] = (
                 "true" if api_params["merge_plain_keyword_results"] else "false"
             )
         api_params.setdefault("merge_plain_keyword_results", "true")
+        api_params.pop("include_translated_tag_results", None)
     elif action == "search_user":
         api_params.pop("sort", None)
         api_params.pop("search_target", None)

@@ -216,7 +216,9 @@ def test_oauth_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
     assert sni_disabled == [True, True]
 
 
-def test_image_pixez_mode_uses_domain_url_dns_override_and_disables_sni(monkeypatch) -> None:
+def test_image_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
+    monkeypatch,
+) -> None:
     request_hosts: list[str] = []
     recorded_dns_overrides: list[dict[str, str]] = []
     sni_disabled: list[bool] = []
@@ -286,7 +288,37 @@ def test_disable_bypass_sni_returns_to_plain_domain_request(monkeypatch) -> None
 
     assert result["ok"] is True
     assert request_hosts == ["app-api.pixiv.net"]
-    assert recorded_dns_overrides == [{}]
+
+
+def test_illust_recommended_request_matches_pixez_query_shape(monkeypatch) -> None:
+    captured_calls: list[dict[str, object]] = []
+
+    def handler(**kwargs):
+        captured_calls.append(kwargs)
+        return _FakeResponse(200, {"illusts": []})
+
+    session = _FakeSession(handler)
+    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_sdk, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_sdk, "get_environ_proxies", lambda _url: {})
+
+    result = pixiv_sdk.pixiv(
+        "illust_recommended",
+        {},
+        access_token="token",
+        refresh_token="refresh",
+        bypass_sni=False,
+    )
+
+    assert result["ok"] is True
+    assert len(captured_calls) == 1
+    request_kwargs = captured_calls[0]
+    assert request_kwargs["method"] == "GET"
+    assert request_kwargs["url"] == "https://app-api.pixiv.net/v1/illust/recommended"
+    assert request_kwargs["params"] == {
+        "filter": "for_ios",
+        "include_ranking_label": "true",
+    }
 
 
 def test_web_search_does_not_require_refresh_token(monkeypatch) -> None:

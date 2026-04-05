@@ -2,11 +2,16 @@
 
 PixivDirect 插件，用于直连访问 Pixiv，支持查询作品详情、作者信息和随机获取收藏图片。
 
-当前版本：`v2.0.0`
+当前版本：`v2.0.1`
 
 ## 更新日志
 
 README 中仅保留最近 5 条版本摘要（超出 5 条时需删除最旧记录），完整历史请见 [CHANGELOG.md](./CHANGELOG.md)。
+
+### v2.0.1
+
+- 修复 `illust_recommended` 请求参数与本地 `pixez-flutter` 不一致的问题，现已改为和 PixEz 一样使用 `filter=for_ios` 与 `include_ranking_label=true`
+- 补充对齐测试，避免后续请求参数再次漂移
 
 ### v2.0.0
 

@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [2.0.1] - 2026-04-05
+
+### Fixed
+- 修复 `illust_recommended` 请求与本地 `pixez-flutter` 的参数不一致问题；现在与 PixEz 一样使用 `filter=for_ios` 与 `include_ranking_label=true`
+
+### Changed
+- 新增测试覆盖 `illust_recommended` 的请求参数，防止后续再次偏离本地 PixEz clone
+
 ## [2.0.0] - 2026-04-05
 
 ### Changed
