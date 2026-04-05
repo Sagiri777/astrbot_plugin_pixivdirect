@@ -816,6 +816,50 @@ class PixivTransport:
             assert last_res is not None
             return last_res
 
+        def _request_with_ip_candidates(
+            candidates: list[str],
+            *,
+            retryable_statuses_for_action: set[int],
+            retryable_failure_budget_for_action: int | None,
+        ) -> tuple[requests.Response | None, Exception | None]:
+            failure_budget_used = 0
+            last_candidate_res: requests.Response | None = None
+            last_candidate_exc: Exception | None = None
+            for ip in candidates:
+                try:
+                    res = _do_request(
+                        dns_override={req_host: ip}, verify=False, disable_sni=True
+                    )
+                    last_candidate_res = res
+                    if res.ok:
+                        return res, None
+                    if (
+                        runtime_dns_resolve
+                        and res.status_code in retryable_statuses_for_action
+                    ):
+                        failure_budget_used += 1
+                        if (
+                            retryable_failure_budget_for_action
+                            and failure_budget_used
+                            >= retryable_failure_budget_for_action
+                        ):
+                            break
+                        continue
+                    return res, None
+                except (
+                    RequestsConnectionError,
+                    RequestsTimeout,
+                    RequestsSSLError,
+                ) as exc:
+                    last_candidate_exc = exc
+                    failure_budget_used += 1
+                    if (
+                        retryable_failure_budget_for_action
+                        and failure_budget_used >= retryable_failure_budget_for_action
+                    ):
+                        break
+            return last_candidate_res, last_candidate_exc
+
         if not (bypass_sni and req_host in host_map) or has_proxy:
             return _do_request()
 
@@ -835,34 +879,41 @@ class PixivTransport:
         ):
             ip_candidates = ip_candidates[:runtime_ip_candidate_limit]
 
-        failure_budget_used = 0
-        last_res: requests.Response | None = None
-        last_exc: Exception | None = None
-        for ip in ip_candidates:
-            try:
-                res = _do_request(
-                    dns_override={req_host: ip}, verify=False, disable_sni=True
+        last_res, last_exc = _request_with_ip_candidates(
+            ip_candidates,
+            retryable_statuses_for_action=retryable_statuses,
+            retryable_failure_budget_for_action=retryable_failure_budget,
+        )
+
+        if (
+            not runtime_dns_resolve
+            and last_res is None
+            and last_exc is not None
+            and not has_proxy
+        ):
+            live_ip_candidates = _build_pixez_ip_candidates(
+                req_host,
+                host_map,
+                runtime_dns_resolve=True,
+                dns_server=dns_server,
+                dns_timeout=dns_timeout,
+                proxy=proxy,
+                session=session,
+                proxies=proxies,
+            )
+            live_ip_candidates = [
+                ip for ip in live_ip_candidates if ip not in ip_candidates
+            ]
+            if live_ip_candidates:
+                live_res, live_exc = _request_with_ip_candidates(
+                    live_ip_candidates,
+                    retryable_statuses_for_action=retryable_statuses,
+                    retryable_failure_budget_for_action=retryable_failure_budget,
                 )
-                last_res = res
-                if res.ok:
-                    return res
-                if runtime_dns_resolve and res.status_code in retryable_statuses:
-                    failure_budget_used += 1
-                    if (
-                        retryable_failure_budget
-                        and failure_budget_used >= retryable_failure_budget
-                    ):
-                        break
-                    continue
-                return res
-            except (RequestsConnectionError, RequestsTimeout, RequestsSSLError) as exc:
-                last_exc = exc
-                failure_budget_used += 1
-                if (
-                    retryable_failure_budget
-                    and failure_budget_used >= retryable_failure_budget
-                ):
-                    break
+                if live_res is not None:
+                    return live_res
+                if live_exc is not None:
+                    last_exc = live_exc
 
         alias_host = HOST_ALIAS_MAP.get(req_host)
         if (
@@ -896,6 +947,14 @@ class PixivAuthClient:
         proxy: str | None = None,
         dns_cache_file: str = ".pixiv_host_map.json",
         bypass_sni: bool = True,
+        timeout: int = 30,
+        connect_timeout: float = 8.0,
+        dns_timeout: int = 3,
+        dns_update_hosts: bool = False,
+        dns_server: str = "doh.dns.sb",
+        runtime_dns_resolve: bool = False,
+        max_retries: int = 3,
+        connect_probe_timeout: float = 2.0,
     ) -> dict[str, Any]:
         refresh_token = (
             refresh_token
@@ -921,6 +980,14 @@ class PixivAuthClient:
             proxy=proxy,
             dns_cache_file=dns_cache_file,
             bypass_sni=bypass_sni,
+            timeout=timeout,
+            connect_timeout=connect_timeout,
+            dns_timeout=dns_timeout,
+            dns_update_hosts=dns_update_hosts,
+            dns_server=dns_server,
+            runtime_dns_resolve=runtime_dns_resolve,
+            max_retries=max_retries,
+            connect_probe_timeout=connect_probe_timeout,
         )
         payload = res.json()
         return {
@@ -1017,6 +1084,14 @@ class PixivClientFacade:
                 proxy=proxy,
                 dns_cache_file=dns_cache_file,
                 bypass_sni=bypass_sni,
+                timeout=timeout,
+                connect_timeout=connect_timeout,
+                dns_timeout=dns_timeout,
+                dns_update_hosts=dns_update_hosts,
+                dns_server=dns_server,
+                runtime_dns_resolve=runtime_dns_resolve,
+                max_retries=max_retries,
+                connect_probe_timeout=connect_probe_timeout,
             )
             if not auth_result.get("ok"):
                 return {

@@ -8,6 +8,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
+from requests.exceptions import Timeout as RequestsTimeout
+
 
 class _DummyLogger:
     def debug(self, *args, **kwargs) -> None:
@@ -214,6 +216,131 @@ def test_oauth_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
         {"app-api.pixiv.net": "210.140.139.155"},
     ]
     assert sni_disabled == [True, True]
+
+
+def test_oauth_timeout_retries_with_runtime_dns_candidate(monkeypatch) -> None:
+    request_hosts: list[str] = []
+    recorded_dns_overrides: list[dict[str, str]] = []
+    sni_disabled: list[bool] = []
+    oauth_attempts = 0
+
+    def handler(**kwargs):
+        nonlocal oauth_attempts
+        request_hosts.append(urlsplit(str(kwargs["url"])).hostname or "")
+        if request_hosts[-1] == "oauth.secure.pixiv.net":
+            oauth_attempts += 1
+        if oauth_attempts == 1:
+            raise RequestsTimeout("Connection to oauth.secure.pixiv.net timed out.")
+        if request_hosts[-1] == "oauth.secure.pixiv.net":
+            return _FakeResponse(
+                200,
+                {
+                    "access_token": "token",
+                    "refresh_token": "refresh-new",
+                    "user": {"id": 1},
+                },
+            )
+        return _FakeResponse(200, {"illust": {"id": 123}})
+
+    @contextmanager
+    def fake_dns_patch(host_map):
+        recorded_dns_overrides.append(dict(host_map))
+        yield
+
+    @contextmanager
+    def fake_without_tls_sni():
+        sni_disabled.append(True)
+        yield
+
+    def fake_resolve_host_ips(
+        host: str,
+        *,
+        doh_server: str,
+        timeout: int,
+        session=None,
+        proxies=None,
+        max_doh_servers=None,
+    ) -> list[str]:
+        del doh_server, timeout, session, proxies, max_doh_servers
+        if host == "oauth.secure.pixiv.net":
+            return ["210.140.139.200"]
+        return []
+
+    session = _FakeSession(handler)
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
+    monkeypatch.setattr(pixiv_client, "_patched_dns_resolution", fake_dns_patch)
+    monkeypatch.setattr(pixiv_client, "_without_tls_sni", fake_without_tls_sni)
+    monkeypatch.setattr(pixiv_client, "_resolve_host_ips", fake_resolve_host_ips)
+
+    result = pixiv_client.PixivClientFacade().call_action(
+        "illust_detail",
+        {"illust_id": 123},
+        refresh_token="refresh",
+        access_token=None,
+        bypass_sni=True,
+        runtime_dns_resolve=False,
+    )
+
+    assert result["ok"] is True
+    assert request_hosts == [
+        "oauth.secure.pixiv.net",
+        "oauth.secure.pixiv.net",
+        "app-api.pixiv.net",
+    ]
+    assert recorded_dns_overrides == [
+        {"oauth.secure.pixiv.net": "210.140.139.155"},
+        {"oauth.secure.pixiv.net": "210.140.139.200"},
+        {"app-api.pixiv.net": "210.140.139.155"},
+    ]
+    assert sni_disabled == [True, True, True]
+
+
+def test_auth_refresh_forwards_transport_network_kwargs(monkeypatch) -> None:
+    captured_kwargs: dict[str, object] = {}
+
+    class _FakeTransport:
+        def send(self, method: str, url: str, **kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeResponse(
+                200,
+                {
+                    "access_token": "token",
+                    "refresh_token": "refresh-new",
+                    "user": {"id": 1},
+                },
+            )
+
+    auth_client = pixiv_client.PixivAuthClient(_FakeTransport())
+
+    result = auth_client.refresh_access_token(
+        refresh_token="refresh",
+        proxy="http://127.0.0.1:7890",
+        dns_cache_file="/tmp/pixiv_host_map.json",
+        bypass_sni=False,
+        timeout=45,
+        connect_timeout=5.5,
+        dns_timeout=4,
+        dns_update_hosts=True,
+        dns_server="1.1.1.1",
+        runtime_dns_resolve=True,
+        max_retries=1,
+        connect_probe_timeout=1.5,
+    )
+
+    assert result["ok"] is True
+    assert captured_kwargs["proxy"] == "http://127.0.0.1:7890"
+    assert captured_kwargs["dns_cache_file"] == "/tmp/pixiv_host_map.json"
+    assert captured_kwargs["bypass_sni"] is False
+    assert captured_kwargs["timeout"] == 45
+    assert captured_kwargs["connect_timeout"] == 5.5
+    assert captured_kwargs["dns_timeout"] == 4
+    assert captured_kwargs["dns_update_hosts"] is True
+    assert captured_kwargs["dns_server"] == "1.1.1.1"
+    assert captured_kwargs["runtime_dns_resolve"] is True
+    assert captured_kwargs["max_retries"] == 1
+    assert captured_kwargs["connect_probe_timeout"] == 1.5
 
 
 def test_build_pixiv_call_kwargs_does_not_include_bypass_mode(tmp_path) -> None:

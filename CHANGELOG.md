@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [3.0.3] - 2026-04-05
+
+### Fixed
+- 修复 `oauth.secure.pixiv.net` 命中失效缓存 IP 时，OAuth 刷新令牌流程会在 connect timeout 后直接失败的问题；现在会自动尝试运行时 DNS 候选 IP 继续认证
+- 修复认证阶段未透传 `connect_timeout`、`dns_timeout`、`dns_update_hosts`、`runtime_dns_resolve` 等网络参数，导致 auth 请求与主请求链路行为不一致的问题
+
 ## [3.0.2] - 2026-04-05
 
 ### Changed
