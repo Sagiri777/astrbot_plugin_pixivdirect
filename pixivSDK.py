@@ -44,6 +44,12 @@ HOST_ALIAS_MAP: dict[str, str] = {
     "s.pximg.net": "pximg.net",
 }
 
+# PixEz 2026-04-02 起的策略调整：App API 保留域名级 TLS/SNI，仅覆盖 DNS 到候选 IP。
+# 图片 CDN 仍继续使用固定 IP + 禁用 SNI。
+PIXEZ_DOMAIN_SNI_HOSTS: set[str] = {
+    "app-api.pixiv.net",
+}
+
 PIXIV_HASH_SALT = "28c1fdd170a5204386cb1313c7077b34f83e4aaf4aa829ce78c231e05b0bae2c"
 PIXIV_CLIENT_ID = "MOBrBDS8blbauoSck0ZfDbtuzpyT"
 PIXIV_CLIENT_SECRET = "lsACyCD94FhDUtGTXi3QzcFE2uU1hqtDaKeqrdwj"
@@ -1136,6 +1142,19 @@ def pixiv(
                     verify=verify,
                 )
 
+        def _do_direct_dns_override_request(
+            host: str,
+            ip: str,
+            *,
+            verify: bool,
+            disable_sni: bool,
+        ) -> requests.Response:
+            return _do_request(
+                dns_override={host: ip},
+                verify=verify,
+                disable_sni=disable_sni,
+            )
+
         def _do_alias_host_request(
             alias_host: str,
             *,
@@ -1232,11 +1251,24 @@ def pixiv(
         last_exc: Exception | None = None
         last_res: requests.Response | None = None
         attempted = False
+        prefer_domain_sni = req_host in PIXEZ_DOMAIN_SNI_HOSTS and not image_mode
         for ip in ip_candidates:
             if allow_pixez:
                 try:
                     attempted = True
-                    res = _do_direct_ip_request(ip, verify=False, disable_sni=True)
+                    if prefer_domain_sni:
+                        res = _do_direct_dns_override_request(
+                            req_host,
+                            ip,
+                            verify=False,
+                            disable_sni=False,
+                        )
+                    else:
+                        res = _do_direct_ip_request(
+                            ip,
+                            verify=False,
+                            disable_sni=True,
+                        )
                     last_res = res
                     if res.ok:
                         return res
@@ -1478,15 +1510,19 @@ def pixiv(
             page_data = {"raw": page_res.text}
 
         illusts = page_data.get("illusts") if isinstance(page_data, dict) else None
-        metadata_items = [
-            _illust_to_metadata_entry(
-                illust,
-                restrict=restrict,
-                quality=str(params.get("quality") or "original"),
-            )
-            for illust in illusts
-            if isinstance(illust, dict)
-        ] if isinstance(illusts, list) else []
+        metadata_items = (
+            [
+                _illust_to_metadata_entry(
+                    illust,
+                    restrict=restrict,
+                    quality=str(params.get("quality") or "original"),
+                )
+                for illust in illusts
+                if isinstance(illust, dict)
+            ]
+            if isinstance(illusts, list)
+            else []
+        )
 
         return {
             "ok": page_res.ok,
@@ -1495,7 +1531,9 @@ def pixiv(
             "data": {
                 "items": metadata_items,
                 "illusts": illusts if isinstance(illusts, list) else [],
-                "next_url": page_data.get("next_url") if isinstance(page_data, dict) else None,
+                "next_url": page_data.get("next_url")
+                if isinstance(page_data, dict)
+                else None,
             },
             "error": page_data if not page_res.ok else None,
             "access_token": access_token,

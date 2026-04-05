@@ -19,21 +19,21 @@ from .constants import (
     DEFAULT_POOL_KEY,
     IDLE_CACHE_COUNT,
     IDLE_CACHE_INTERVAL_SECONDS,
-    METADATA_WARMUP_INTERVAL_SECONDS,
     MAX_RANDOM_PAGES,
+    METADATA_WARMUP_INTERVAL_SECONDS,
     MIN_COMMAND_INTERVAL_SECONDS,
     SEARCH_CONNECT_TIMEOUT_SECONDS,
     SEARCH_RETRYABLE_FAILURE_BUDGET,
     SEARCH_RUNTIME_IP_CANDIDATE_LIMIT,
 )
 from .emoji_reaction import EmojiReactionHandler
-from .image_host import ImageHostHandler
 from .image_handler import ImageHandler
+from .image_host import ImageHostHandler
 from .pixivSDK import pixiv, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
-@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.12.0")
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "1.12.1")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
@@ -600,7 +600,10 @@ class PixivDirectPlugin(Star):
             refresh_token = self._config_manager.token_map.get(user_key)
             if not refresh_token:
                 continue
-            latest_refresh_token, _ = await self._command_handler.warmup_metadata_for_user(
+            (
+                latest_refresh_token,
+                _,
+            ) = await self._command_handler.warmup_metadata_for_user(
                 user_key=user_key,
                 refresh_token=refresh_token,
                 page_batch=int(

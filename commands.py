@@ -21,9 +21,9 @@ from .constants import (
     MAX_RANDOM_WARMUP,
     MAX_UNIQUE_SCAN_PAGES,
     MULTI_IMAGE_THRESHOLD,
+    RANDOM_DOWNLOAD_CONCURRENCY,
     RANDOM_SOURCE_IMAGE,
     RANDOM_SOURCE_METADATA,
-    RANDOM_DOWNLOAD_CONCURRENCY,
     SEARCH_DEFAULT_LIMIT,
     SEARCH_DURATION_OPTIONS,
     SEARCH_MAX_LIMIT,
@@ -32,8 +32,8 @@ from .constants import (
     SEARCH_USER_SORT_OPTIONS,
 )
 from .emoji_reaction import EmojiReactionHandler
-from .image_host import ImageHostHandler
 from .image_handler import ImageHandler
+from .image_host import ImageHostHandler
 from .utils import (
     format_author_detail,
     format_illust_detail,
@@ -295,7 +295,7 @@ class CommandHandler:
     def _bypass_mode_summary(cls, mode: str) -> str:
         summaries = {
             "auto": "先走 PixEz 式直连，再回退到 Accesser 式域名覆盖。",
-            "pixez": "只走缓存 IP + 禁用 SNI 的 PixEz 式直连。",
+            "pixez": "App API 保留域名 SNI 并覆盖到缓存 IP，图片继续走禁用 SNI 的 PixEz 式直连。",
             "accesser": "只走 Accesser 式域名解析覆盖，不走直连 IP。",
             "disabled": "完全关闭绕过，直接走普通域名请求。",
         }
@@ -432,7 +432,9 @@ class CommandHandler:
             if not result.get("ok"):
                 break
 
-            latest_refresh_token = str(result.get("refresh_token") or latest_refresh_token)
+            latest_refresh_token = str(
+                result.get("refresh_token") or latest_refresh_token
+            )
             data = result.get("data")
             if not isinstance(data, dict):
                 break
@@ -565,7 +567,9 @@ class CommandHandler:
             name_prefix=f"metadata_{illust_id or 'unknown'}",
         )
         extra_image_paths: list[str] = []
-        for index, image_url in enumerate(image_urls[1 : self._get_multi_image_threshold()], start=1):
+        for index, image_url in enumerate(
+            image_urls[1 : self._get_multi_image_threshold()], start=1
+        ):
             extra_image_paths.append(
                 await self._image.download_image_to_cache(
                     str(image_url),
@@ -577,7 +581,9 @@ class CommandHandler:
 
         item = self._build_cache_item(
             path=primary_path,
-            caption=format_random_bookmark(self._metadata_to_random_item(metadata_item)),
+            caption=format_random_bookmark(
+                self._metadata_to_random_item(metadata_item)
+            ),
             x_restrict=metadata_item.get("x_restrict"),
             tags=metadata_item.get("tags", []),
             illust_id=illust_id if isinstance(illust_id, int) else None,
@@ -1597,7 +1603,7 @@ class CommandHandler:
                 if effective_bypass_mode == "disabled":
                     network_mode = "普通域名模式（已禁用 SNI 绕过）"
                 elif effective_bypass_mode == "pixez":
-                    network_mode = "PixEz 模式（缓存 IP + 禁用 SNI）"
+                    network_mode = "PixEz 模式（App API 保留 SNI，图片禁用 SNI）"
                 elif effective_bypass_mode == "accesser":
                     network_mode = "Accesser 模式（域名覆盖解析）"
                 else:
@@ -1614,7 +1620,9 @@ class CommandHandler:
             entity_key = self._entity_key_for_event(event)
             if len(args) >= 3:
                 if not event.is_admin():
-                    yield event.plain_result("❌ 仅 AstrBot 管理员可修改 random 读取模式。")
+                    yield event.plain_result(
+                        "❌ 仅 AstrBot 管理员可修改 random 读取模式。"
+                    )
                     return
                 mode = args[2].strip().lower()
                 if mode not in {RANDOM_SOURCE_IMAGE, RANDOM_SOURCE_METADATA}:
@@ -2251,7 +2259,10 @@ class CommandHandler:
                 return
 
             if source_mode == RANDOM_SOURCE_METADATA:
-                metadata_item, latest_refresh_token = await self._pick_from_metadata_cache(
+                (
+                    metadata_item,
+                    latest_refresh_token,
+                ) = await self._pick_from_metadata_cache(
                     owner_user_key=target_user_key,
                     filter_params=filter_params,
                     refresh_token=target_user_token,
@@ -2530,7 +2541,9 @@ class CommandHandler:
         async def build_cache_item(item: dict[str, Any]) -> dict[str, Any]:
             cached_item = None
             if isinstance(item.get("illust_id"), int):
-                cached_item = self._cache.find_cached_by_illust_id(int(item["illust_id"]))
+                cached_item = self._cache.find_cached_by_illust_id(
+                    int(item["illust_id"])
+                )
             if cached_item:
                 return {
                     **cached_item,
@@ -2841,8 +2854,17 @@ class CommandHandler:
         if subcommand == "set" and len(args) >= 4:
             key = args[2].lower()
             value = " ".join(args[3:]).strip()
-            if key not in {"endpoint", "method", "file_field", "success_path", "delete_path", "timeout_seconds"}:
-                yield event.plain_result("❌ 仅支持设置 endpoint/method/file_field/success_path/delete_path/timeout_seconds。")
+            if key not in {
+                "endpoint",
+                "method",
+                "file_field",
+                "success_path",
+                "delete_path",
+                "timeout_seconds",
+            }:
+                yield event.plain_result(
+                    "❌ 仅支持设置 endpoint/method/file_field/success_path/delete_path/timeout_seconds。"
+                )
                 return
             if key == "method":
                 value = value.lower()

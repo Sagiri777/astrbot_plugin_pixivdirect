@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import sys
 import types
+from contextlib import contextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -110,13 +111,29 @@ class _FakeSession:
 
 def test_search_budget_limits_runtime_candidates(monkeypatch) -> None:
     direct_ip_calls: list[str] = []
+    current_dns_override: dict[str, str] = {}
 
     def handler(**kwargs):
         host = urlsplit(str(kwargs["url"])).hostname or ""
+        if host == "app-api.pixiv.net":
+            candidate = current_dns_override.get(host)
+            if candidate in {"210.140.139.155", "1.1.1.1"}:
+                direct_ip_calls.append(candidate)
+                raise pixiv_sdk.RequestsTimeout("connect timeout")
+            raise AssertionError(f"Unexpected DNS override for {host}: {candidate}")
         if host in {"210.140.139.155", "1.1.1.1"}:
             direct_ip_calls.append(host)
             raise pixiv_sdk.RequestsTimeout("connect timeout")
         raise AssertionError(f"Unexpected request host: {host}")
+
+    @contextmanager
+    def fake_dns_patch(host_map):
+        current_dns_override.clear()
+        current_dns_override.update(host_map)
+        try:
+            yield
+        finally:
+            current_dns_override.clear()
 
     session = _FakeSession(handler)
     monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
@@ -136,6 +153,7 @@ def test_search_budget_limits_runtime_candidates(monkeypatch) -> None:
         "_rank_ips_by_latency",
         lambda ips, timeout: (list(ips), {ip: index for index, ip in enumerate(ips)}),
     )
+    monkeypatch.setattr(pixiv_sdk, "_patched_dns_resolution", fake_dns_patch)
 
     result = pixiv_sdk.pixiv(
         "search_illust",
@@ -156,9 +174,19 @@ def test_search_budget_limits_runtime_candidates(monkeypatch) -> None:
 
 def test_non_search_requests_ignore_search_budget(monkeypatch) -> None:
     direct_ip_calls: list[str] = []
+    current_dns_override: dict[str, str] = {}
 
     def handler(**kwargs):
         host = urlsplit(str(kwargs["url"])).hostname or ""
+        if host == "app-api.pixiv.net":
+            candidate = current_dns_override.get(host)
+            if candidate in {"210.140.139.155", "1.1.1.1"}:
+                direct_ip_calls.append(candidate)
+                raise pixiv_sdk.RequestsTimeout("connect timeout")
+            if candidate == "2.2.2.2":
+                direct_ip_calls.append(candidate)
+                return _FakeResponse(200, {"illust": {"id": 123}})
+            raise AssertionError(f"Unexpected DNS override for {host}: {candidate}")
         if host in {"210.140.139.155", "1.1.1.1"}:
             direct_ip_calls.append(host)
             raise pixiv_sdk.RequestsTimeout("connect timeout")
@@ -166,6 +194,15 @@ def test_non_search_requests_ignore_search_budget(monkeypatch) -> None:
             direct_ip_calls.append(host)
             return _FakeResponse(200, {"illust": {"id": 123}})
         raise AssertionError(f"Unexpected request host: {host}")
+
+    @contextmanager
+    def fake_dns_patch(host_map):
+        current_dns_override.clear()
+        current_dns_override.update(host_map)
+        try:
+            yield
+        finally:
+            current_dns_override.clear()
 
     session = _FakeSession(handler)
     monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
@@ -185,6 +222,7 @@ def test_non_search_requests_ignore_search_budget(monkeypatch) -> None:
         "_rank_ips_by_latency",
         lambda ips, timeout: (list(ips), {ip: index for index, ip in enumerate(ips)}),
     )
+    monkeypatch.setattr(pixiv_sdk, "_patched_dns_resolution", fake_dns_patch)
 
     result = pixiv_sdk.pixiv(
         "illust_detail",
@@ -201,6 +239,78 @@ def test_non_search_requests_ignore_search_budget(monkeypatch) -> None:
     assert result["ok"] is True
     assert result["status"] == 200
     assert direct_ip_calls == ["210.140.139.155", "1.1.1.1", "2.2.2.2"]
+
+
+def test_app_api_pixez_mode_keeps_domain_url_and_sni(monkeypatch) -> None:
+    recorded_dns_overrides: list[dict[str, str]] = []
+    request_hosts: list[str] = []
+
+    def handler(**kwargs):
+        request_hosts.append(urlsplit(str(kwargs["url"])).hostname or "")
+        return _FakeResponse(200, {"illust": {"id": 123}})
+
+    @contextmanager
+    def fake_dns_patch(host_map):
+        recorded_dns_overrides.append(dict(host_map))
+        yield
+
+    session = _FakeSession(handler)
+    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_sdk, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_sdk, "_get_runtime_dns_cache", lambda _key: None)
+    monkeypatch.setattr(pixiv_sdk, "get_environ_proxies", lambda _url: {})
+    monkeypatch.setattr(
+        pixiv_sdk,
+        "_resolve_host_ips",
+        lambda *_args, **_kwargs: ["1.1.1.1"],
+    )
+    monkeypatch.setattr(
+        pixiv_sdk, "_set_runtime_dns_cache", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        pixiv_sdk,
+        "_rank_ips_by_latency",
+        lambda ips, timeout: (list(ips), {ip: index for index, ip in enumerate(ips)}),
+    )
+    monkeypatch.setattr(pixiv_sdk, "_patched_dns_resolution", fake_dns_patch)
+
+    result = pixiv_sdk.pixiv(
+        "illust_detail",
+        {"illust_id": 123},
+        access_token="token",
+        refresh_token="refresh",
+        bypass_sni=True,
+        bypass_mode="pixez",
+        runtime_dns_resolve=True,
+    )
+
+    assert result["ok"] is True
+    assert request_hosts == ["app-api.pixiv.net"]
+    assert recorded_dns_overrides == [{"app-api.pixiv.net": "210.140.139.155"}]
+
+
+def test_image_pixez_mode_still_uses_direct_ip_without_sni(monkeypatch) -> None:
+    request_hosts: list[str] = []
+
+    def handler(**kwargs):
+        request_hosts.append(urlsplit(str(kwargs["url"])).hostname or "")
+        return _FakeResponse(200, text="image-bytes")
+
+    session = _FakeSession(handler)
+    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_sdk, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_sdk, "get_environ_proxies", lambda _url: {})
+
+    result = pixiv_sdk.pixiv(
+        "image",
+        {"url": "https://i.pximg.net/img-original/img/2026/04/05/00/00/00/123_p0.jpg"},
+        bypass_sni=True,
+        bypass_mode="pixez",
+        runtime_dns_resolve=False,
+    )
+
+    assert result["ok"] is True
+    assert request_hosts == ["210.140.139.133"]
 
 
 def test_web_search_does_not_require_refresh_token(monkeypatch) -> None:

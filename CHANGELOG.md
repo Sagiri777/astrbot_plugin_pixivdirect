@@ -16,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [1.12.1] - 2026-04-05
+
+### Changed
+- PixEz 模式下的 App API 请求现改为保留域名 URL 与 TLS/SNI，只将 DNS 解析覆盖到候选缓存 IP；图片链路继续维持固定 IP + 禁用 SNI 的直连方式
+
+### Fixed
+- 修复 App API 仍沿用“URL 直接改成 IP + 禁用 SNI”旧链路，导致无法对齐 pixez-flutter 近 4 天最新 SNI 绕过策略的问题
+
 ## [1.12.0] - 2026-04-02
 
 ### Added
