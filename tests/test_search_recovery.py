@@ -78,7 +78,9 @@ if str(PARENT_DIR) not in sys.path:
 _install_astrbot_stubs(ROOT_DIR)
 
 main_module = importlib.import_module("astrbot_plugin_pixivdirect.main")
-pixiv_sdk = importlib.import_module("astrbot_plugin_pixivdirect.pixivSDK")
+pixiv_client = importlib.import_module(
+    "astrbot_plugin_pixivdirect.infrastructure.pixiv_client"
+)
 config_module = importlib.import_module("astrbot_plugin_pixivdirect.config_manager")
 
 
@@ -138,19 +140,18 @@ def test_app_api_pixez_mode_keeps_domain_url_and_disables_sni(monkeypatch) -> No
         yield
 
     session = _FakeSession(handler)
-    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
-    monkeypatch.setattr(pixiv_sdk, "_load_host_map_file", lambda _path: {})
-    monkeypatch.setattr(pixiv_sdk, "get_environ_proxies", lambda _url: {})
-    monkeypatch.setattr(pixiv_sdk, "_patched_dns_resolution", fake_dns_patch)
-    monkeypatch.setattr(pixiv_sdk, "_without_tls_sni", fake_without_tls_sni)
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
+    monkeypatch.setattr(pixiv_client, "_patched_dns_resolution", fake_dns_patch)
+    monkeypatch.setattr(pixiv_client, "_without_tls_sni", fake_without_tls_sni)
 
-    result = pixiv_sdk.pixiv(
+    result = pixiv_client.PixivClientFacade().call_action(
         "illust_detail",
         {"illust_id": 123},
         access_token="token",
         refresh_token="refresh",
         bypass_sni=True,
-        bypass_mode="pixez",
         runtime_dns_resolve=True,
     )
 
@@ -191,19 +192,18 @@ def test_oauth_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
         yield
 
     session = _FakeSession(handler)
-    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
-    monkeypatch.setattr(pixiv_sdk, "_load_host_map_file", lambda _path: {})
-    monkeypatch.setattr(pixiv_sdk, "get_environ_proxies", lambda _url: {})
-    monkeypatch.setattr(pixiv_sdk, "_patched_dns_resolution", fake_dns_patch)
-    monkeypatch.setattr(pixiv_sdk, "_without_tls_sni", fake_without_tls_sni)
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
+    monkeypatch.setattr(pixiv_client, "_patched_dns_resolution", fake_dns_patch)
+    monkeypatch.setattr(pixiv_client, "_without_tls_sni", fake_without_tls_sni)
 
-    result = pixiv_sdk.pixiv(
+    result = pixiv_client.PixivClientFacade().call_action(
         "illust_detail",
         {"illust_id": 123},
         refresh_token="refresh",
         access_token=None,
         bypass_sni=True,
-        bypass_mode="pixez",
         runtime_dns_resolve=False,
     )
 
@@ -238,17 +238,16 @@ def test_image_pixez_mode_uses_domain_url_dns_override_and_disables_sni(
         yield
 
     session = _FakeSession(handler)
-    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
-    monkeypatch.setattr(pixiv_sdk, "_load_host_map_file", lambda _path: {})
-    monkeypatch.setattr(pixiv_sdk, "get_environ_proxies", lambda _url: {})
-    monkeypatch.setattr(pixiv_sdk, "_patched_dns_resolution", fake_dns_patch)
-    monkeypatch.setattr(pixiv_sdk, "_without_tls_sni", fake_without_tls_sni)
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
+    monkeypatch.setattr(pixiv_client, "_patched_dns_resolution", fake_dns_patch)
+    monkeypatch.setattr(pixiv_client, "_without_tls_sni", fake_without_tls_sni)
 
-    result = pixiv_sdk.pixiv(
+    result = pixiv_client.PixivClientFacade().call_action(
         "image",
         {"url": "https://i.pximg.net/img-original/img/2026/04/05/00/00/00/123_p0.jpg"},
         bypass_sni=True,
-        bypass_mode="pixez",
         runtime_dns_resolve=False,
     )
 
@@ -272,18 +271,17 @@ def test_disable_bypass_sni_returns_to_plain_domain_request(monkeypatch) -> None
         yield
 
     session = _FakeSession(handler)
-    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
-    monkeypatch.setattr(pixiv_sdk, "_load_host_map_file", lambda _path: {})
-    monkeypatch.setattr(pixiv_sdk, "get_environ_proxies", lambda _url: {})
-    monkeypatch.setattr(pixiv_sdk, "_patched_dns_resolution", fake_dns_patch)
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
+    monkeypatch.setattr(pixiv_client, "_patched_dns_resolution", fake_dns_patch)
 
-    result = pixiv_sdk.pixiv(
+    result = pixiv_client.PixivClientFacade().call_action(
         "illust_detail",
         {"illust_id": 123},
         access_token="token",
         refresh_token="refresh",
         bypass_sni=False,
-        bypass_mode="pixez",
     )
 
     assert result["ok"] is True
@@ -298,11 +296,11 @@ def test_illust_recommended_request_matches_pixez_query_shape(monkeypatch) -> No
         return _FakeResponse(200, {"illusts": []})
 
     session = _FakeSession(handler)
-    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
-    monkeypatch.setattr(pixiv_sdk, "_load_host_map_file", lambda _path: {})
-    monkeypatch.setattr(pixiv_sdk, "get_environ_proxies", lambda _url: {})
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_load_host_map_file", lambda _path: {})
+    monkeypatch.setattr(pixiv_client, "get_environ_proxies", lambda _url: {})
 
-    result = pixiv_sdk.pixiv(
+    result = pixiv_client.PixivClientFacade().call_action(
         "illust_recommended",
         {},
         access_token="token",
@@ -340,9 +338,9 @@ def test_web_search_does_not_require_refresh_token(monkeypatch) -> None:
         )
 
     session = _FakeSession(handler)
-    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
 
-    result = pixiv_sdk.pixiv(
+    result = pixiv_client.PixivClientFacade().call_action(
         "web_search_illust",
         {"word": "TwiAtri"},
         refresh_token=None,
@@ -364,9 +362,9 @@ def test_image_request_does_not_require_refresh_token(monkeypatch) -> None:
         return _FakeResponse(200, payload=None, text="ok")
 
     session = _FakeSession(handler)
-    monkeypatch.setattr(pixiv_sdk, "_get_session", lambda: session)
+    monkeypatch.setattr(pixiv_client, "_get_session", lambda: session)
 
-    result = pixiv_sdk.pixiv(
+    result = pixiv_client.PixivClientFacade().call_action(
         "image",
         {"url": "https://i.pximg.net/img-original/img/test.jpg"},
         refresh_token=None,
@@ -377,7 +375,7 @@ def test_image_request_does_not_require_refresh_token(monkeypatch) -> None:
     assert result["ok"] is True
     assert result["status"] == 200
     assert captured_headers["Referer"] == "https://app-api.pixiv.net/"
-    assert captured_headers["User-Agent"] == pixiv_sdk.IMAGE_UA
+    assert captured_headers["User-Agent"] == pixiv_client.IMAGE_UA
 
 
 def test_search_request_chain_falls_back_to_web() -> None:

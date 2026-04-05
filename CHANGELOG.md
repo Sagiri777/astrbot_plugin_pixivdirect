@@ -16,6 +16,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Fixed
 -
 
+## [3.0.0] - 2026-04-05
+
+### Added
+- 新增 `infrastructure.pixiv_client` 分层 Pixiv 客户端，按本地 `pixez-flutter` 的 OAuth、App API、图片访问与 Web 搜索行为重建插件运行时接入层
+- 新增 `domain` 与 `plugin.entry` 结构，为后续继续拆分命令层、存储层和后台任务层提供稳定入口
+
+### Changed
+- 插件运行时不再调用 `pixivSDK.py`，`main.py` 现改为通过 `PixivClientFacade` 调度 Pixiv 请求
+- `commands.py` 中的图片 URL 选择逻辑已统一切换到新的内建客户端 helper
+- 插件版本提升至 `3.0.0`
+
+### Fixed
+- 保持 PixEz 风格的 App API、OAuth、图片请求、Web 搜索和 `illust_recommended` 参数行为，并以新的客户端实现补齐测试覆盖
+
 ## [2.0.1] - 2026-04-05
 
 ### Fixed

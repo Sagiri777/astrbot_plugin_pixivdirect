@@ -33,6 +33,7 @@ from .constants import (
 from .emoji_reaction import EmojiReactionHandler
 from .image_handler import ImageHandler
 from .image_host import ImageHostHandler
+from .infrastructure.pixiv_client import pick_illust_image_url, pick_illust_image_urls
 from .utils import (
     format_author_detail,
     format_illust_detail,
@@ -1349,9 +1350,7 @@ class CommandHandler:
             quality = self._config.get_image_quality(entity_key)
 
             # Import helper for multi-image
-            from .pixivSDK import _pick_illust_image_urls
-
-            all_image_urls = _pick_illust_image_urls(illust, quality)
+            all_image_urls = pick_illust_image_urls(illust, quality)
             multi_image_threshold = self._get_multi_image_threshold()
 
             if all_image_urls:
@@ -2430,8 +2429,6 @@ class CommandHandler:
         quality: str = "original",
     ) -> tuple[str, str | None]:
         """Enqueue random bookmark items to cache."""
-        from .pixivSDK import _pick_illust_image_urls
-
         latest_refresh_token = refresh_token
         user_cache = self._config.random_cache.setdefault(user_key, {})
         queue = user_cache.setdefault(DEFAULT_POOL_KEY, [])
@@ -2546,7 +2543,7 @@ class CommandHandler:
                 }
 
             image_urls = (
-                _pick_illust_image_urls(item.get("illust", {}), quality)
+                pick_illust_image_urls(item.get("illust", {}), quality)
                 if isinstance(item.get("illust"), dict)
                 else []
             )
@@ -3031,9 +3028,7 @@ class CommandHandler:
         first_illust_id = first_illust.get("id")
         if self.should_send_image(event, first_illust):
             try:
-                from .pixivSDK import _pick_illust_image_url
-
-                image_url = _pick_illust_image_url(
+                image_url = pick_illust_image_url(
                     first_illust, self._get_quality_for_event(event)
                 )
                 if image_url:

@@ -29,15 +29,17 @@ from .constants import (
 from .emoji_reaction import EmojiReactionHandler
 from .image_handler import ImageHandler
 from .image_host import ImageHostHandler
-from .pixivSDK import pixiv, refresh_pixiv_host_map
+from .infrastructure.pixiv_client import PixivClientFacade, refresh_pixiv_host_map
 from .utils import command_usage, help_text
 
 
+@register("pixivdirect", "Sagiri777", "PixivDirect command plugin", "3.0.0")
 class PixivDirectPlugin(Star):
     def __init__(self, context: Context):
         super().__init__(context)
 
         self._plugin_data_dir = Path(get_astrbot_plugin_data_path()) / "pixivdirect"
+        self._pixiv_client = PixivClientFacade()
 
         # Initialize managers
         self._config_manager = ConfigManager(self._plugin_data_dir)
@@ -235,7 +237,9 @@ class PixivDirectPlugin(Star):
     async def _invoke_pixiv(
         self, action: str, params: dict[str, Any], **call_kwargs: Any
     ) -> dict[str, Any]:
-        return await asyncio.to_thread(pixiv, action, params, **call_kwargs)
+        return await asyncio.to_thread(
+            self._pixiv_client.call_action, action, params, **call_kwargs
+        )
 
     async def _run_search_request_chain(
         self,

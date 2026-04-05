@@ -1,5 +1,5 @@
 from __future__ import annotations
 
-from .plugin.entry import PixivDirectPlugin
+from .entry import PixivDirectPlugin
 
 __all__ = ["PixivDirectPlugin"]
